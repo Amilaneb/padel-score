@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="fr">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="theme-color" content="#000000">
+  <meta name="description" content="Suivi de score de padel en temps réel, à la voix ou au toucher.">
+  <title>Score Padel</title>
+  <link rel="manifest" href="manifest.json">
+  <link rel="icon" type="image/png" href="icons/icon-192.png">
+  <link rel="apple-touch-icon" href="icons/icon-192.png">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- Écran 1 : configuration -->
+  <section id="screen-setup" class="screen screen-setup">
+    <h1 class="app-title">Score Padel</h1>
+    <form id="setup-form" class="setup-form" autocomplete="off">
+      <label class="field field-blue">
+        <span>Équipe bleue</span>
+        <input id="name-blue" type="text" maxlength="24" placeholder="Bleu">
+      </label>
+      <label class="field field-red">
+        <span>Équipe rouge</span>
+        <input id="name-red" type="text" maxlength="24" placeholder="Rouge">
+      </label>
+      <button type="submit" class="btn btn-primary">Démarrer le match</button>
+    </form>
+    <p id="setup-warning" class="warning" hidden></p>
+    <div class="help">
+      <p>Dites :</p>
+      <ul>
+        <li><strong>« point bleu »</strong></li>
+        <li><strong>« point rouge »</strong></li>
+        <li><strong>« annule »</strong> (autant de fois que nécessaire)</li>
+      </ul>
+      <p>Ou touchez la zone de l'équipe qui marque.</p>
+    </div>
+  </section>
+
+  <!-- Écran 2 : jeu -->
+  <section id="screen-game" class="screen screen-game" hidden>
+    <header class="topbar">
+      <div id="mic-status" class="mic" data-state="off" role="status" aria-live="polite">
+        <span class="mic-dot" aria-hidden="true"></span>
+        <span id="mic-text">Micro inactif</span>
+      </div>
+      <div id="sets-line" class="sets-line" aria-label="Sets terminés"></div>
+      <button id="btn-quit" class="btn-small" type="button">Quitter</button>
+    </header>
+    <p id="voice-warning" class="warning warning-game" hidden></p>
+    <div id="banner" class="banner" aria-live="polite"></div>
+
+    <div class="zones">
+      <button id="zone-blue" class="zone zone-blue" type="button" data-team="blue">
+        <span class="zone-head">
+          <span id="label-blue" class="team-name">Bleu</span>
+          <span class="zone-sets">Sets <b id="sets-blue">0</b></span>
+        </span>
+        <span class="zone-body">
+          <span class="games-box"><span class="games-label">Jeux</span><span id="games-blue" class="games">0</span></span>
+          <span id="points-blue" class="points">0</span>
+        </span>
+      </button>
+      <button id="zone-red" class="zone zone-red" type="button" data-team="red">
+        <span class="zone-head">
+          <span id="label-red" class="team-name">Rouge</span>
+          <span class="zone-sets">Sets <b id="sets-red">0</b></span>
+        </span>
+        <span class="zone-body">
+          <span class="games-box"><span class="games-label">Jeux</span><span id="games-red" class="games">0</span></span>
+          <span id="points-red" class="points">0</span>
+        </span>
+      </button>
+    </div>
+
+    <div class="bottombar">
+      <button id="btn-undo" class="btn btn-undo" type="button">↶ Annule</button>
+      <p id="heard" class="heard" aria-live="off"></p>
+    </div>
+  </section>
+
+  <!-- Écran 3 : fin de match -->
+  <section id="screen-end" class="screen screen-end" hidden>
+    <p class="end-kicker">Match gagné</p>
+    <h1 id="winner-name" class="winner"></h1>
+    <p id="end-score" class="end-score"></p>
+    <table class="sets-table">
+      <thead><tr id="sets-table-head"></tr></thead>
+      <tbody>
+        <tr id="sets-row-blue" class="row-blue"></tr>
+        <tr id="sets-row-red" class="row-red"></tr>
+      </tbody>
+    </table>
+    <p id="end-stats" class="end-stats"></p>
+    <button id="btn-new" class="btn btn-primary" type="button">Nouveau match</button>
+    <button id="btn-end-undo" class="btn btn-secondary" type="button">↶ Annuler le dernier point</button>
+  </section>
+
+  <!-- Reprise après rechargement : une interaction est nécessaire pour réactiver le son -->
+  <button id="resume-overlay" class="resume-overlay" type="button" hidden>
+    <span class="resume-title">Match en cours restauré</span>
+    <span class="resume-action">Touchez pour reprendre</span>
+  </button>
+
+  <script src="app.js"></script>
+</body>
+</html>
