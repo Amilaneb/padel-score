@@ -281,15 +281,28 @@ button {
   padding: 16px;
   min-height: 11vh;
 }
-.heard {
+.heard-line {
   margin: 0;
-  min-height: 1.2em;
-  text-align: center;
+  display: flex;
+  gap: 12px;
+  justify-content: space-between;
   color: var(--muted);
   font-size: 0.9rem;
+  min-height: 1.2em;
+}
+.heard {
+  min-width: 0;
   white-space: nowrap;
   overflow: hidden;
   text-overflow: ellipsis;
+}
+.mic-mode { flex-shrink: 0; white-space: nowrap; }
+
+.voice-mode {
+  margin: 16px 0 0;
+  color: var(--muted);
+  font-size: 1rem;
+  line-height: 1.4;
 }
 
 /* Paysage : zones côte à côte */
