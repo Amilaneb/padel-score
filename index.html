@@ -28,6 +28,7 @@
       <button type="submit" class="btn btn-primary">Démarrer le match</button>
     </form>
     <p id="setup-warning" class="warning" hidden></p>
+    <p id="voice-mode" class="voice-mode" hidden></p>
     <div class="help">
       <p>Dites :</p>
       <ul>
@@ -77,7 +78,7 @@
 
     <div class="bottombar">
       <button id="btn-undo" class="btn btn-undo" type="button">↶ Annule</button>
-      <p id="heard" class="heard" aria-live="off"></p>
+      <p class="heard-line"><span id="heard" class="heard" aria-live="off"></span><span id="mic-mode-wrap" class="mic-mode" hidden>Vocal : <span id="mic-mode"></span></span></p>
     </div>
   </section>
 

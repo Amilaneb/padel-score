@@ -58,6 +58,13 @@ ambiguïté puisque l'application ne suit pas le service.
 - **Anti-écho** : le micro ignore ce qu'il entend pendant l'annonce et 0,8 s après, pour que
   l'application ne réagisse pas à sa propre voix (« point annulé… ») ni à deux joueurs qui annoncent
   le même point en même temps. Pour enchaîner plusieurs « annule », attendre la fin de chaque annonce.
+- **Reconnaissance sur le téléphone** : si Chrome sait reconnaître le français directement sur
+  l'appareil (API `processLocally`, Chrome récent), l'application l'utilise ; si le pack de langue est
+  téléchargeable, il est téléchargé au démarrage du match. Sinon, ou en cas d'erreur, elle utilise
+  le service en ligne habituel. Le mode utilisé est affiché sur l'écran d'accueil et en bas de l'écran
+  de jeu (« Vocal : sur le téléphone / en ligne »). Objectif : éviter le bip système d'Android à
+  chaque relance du micro, émis par le service de reconnaissance en ligne. À ce jour, Chrome Android
+  répond généralement « indisponible » : ce mode concerne surtout Chrome ordinateur pour l'instant.
 - **Écoute continue** : si le navigateur coupe la reconnaissance (silence, réseau), elle redémarre
   automatiquement ; l'indicateur en haut à gauche passe brièvement à « Reconnexion… ».
 - **Rechargement** : le match en cours est sauvegardé dans le `localStorage` du téléphone ; après un

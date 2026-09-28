@@ -262,6 +262,7 @@ if (typeof document !== 'undefined') {
     const TAP_DEBOUNCE_MS = 350; // anti double-tap accidentel
     const ANNOUNCE_DELAY_MS = 180; // le bip passe avant l'annonce
     const SPEECH_MAX_MS = 6000;    // durée max supposée d'une annonce
+    const LANG = 'fr-FR';
 
     const $ = (id) => document.getElementById(id);
 
@@ -368,8 +369,59 @@ if (typeof document !== 'undefined') {
       startedAt: 0,
       quickFails: 0,
       restartTimer: null,
+      // Reconnaissance sur l'appareil (Chrome récent) : 'local' si active, sinon 'cloud'.
+      mode: 'cloud',
+      // available | downloadable | downloading | unavailable | unsupported | unknown
+      localStatus: 'unknown',
 
       get available() { return !!this.SR; },
+
+      /** L'API « sur l'appareil » existe-t-elle dans ce navigateur ? */
+      get localSupported() {
+        return !!(this.SR && typeof this.SR.available === 'function'
+          && typeof this.SR.install === 'function' && this.rec && 'processLocally' in this.rec);
+      },
+
+      /** Vérifie si le français est reconnaissable sur l'appareil, et l'active si oui. */
+      async checkLocal() {
+        if (!this.localSupported) {
+          this.localStatus = 'unsupported';
+          renderVoiceMode();
+          return;
+        }
+        try {
+          this.localStatus = await this.SR.available({ langs: [LANG], processLocally: true });
+        } catch (e) {
+          this.localStatus = 'unavailable';
+        }
+        if (this.localStatus === 'available') this.setMode('local');
+        renderVoiceMode();
+      },
+
+      /** Télécharge le français pour l'appareil. Doit être appelé pendant un geste utilisateur. */
+      installLocal() {
+        if (!this.localSupported || this.localStatus !== 'downloadable') return;
+        this.localStatus = 'downloading';
+        renderVoiceMode();
+        this.SR.install({ langs: [LANG], processLocally: true })
+          .then((ok) => {
+            this.localStatus = ok ? 'available' : 'unavailable';
+            if (ok) this.setMode('local');
+          })
+          .catch(() => { this.localStatus = 'unavailable'; })
+          .then(() => renderVoiceMode());
+      },
+
+      setMode(mode) {
+        if (!this.rec || this.mode === mode) return;
+        this.mode = mode;
+        this.rec.processLocally = mode === 'local';
+        renderVoiceMode();
+        // Relance pour appliquer le nouveau mode tout de suite (onend redémarre l'écoute).
+        if (this.wanted) {
+          try { this.rec.abort(); } catch (e) { /* ignore */ }
+        }
+      },
 
       init() {
         if (!this.SR) {
@@ -377,7 +429,7 @@ if (typeof document !== 'undefined') {
           return;
         }
         const rec = new this.SR();
-        rec.lang = 'fr-FR';
+        rec.lang = LANG;
         rec.continuous = true;
         rec.interimResults = false;
         rec.maxAlternatives = 3;
@@ -404,6 +456,13 @@ if (typeof document !== 'undefined') {
         };
 
         rec.onerror = (e) => {
+          // Échec du mode « sur l'appareil » : on revient au service en ligne sans bloquer le vocal.
+          if (this.mode === 'local'
+            && (e.error === 'language-not-supported' || e.error === 'service-not-allowed')) {
+            this.localStatus = 'unavailable';
+            this.setMode('cloud');
+            return;
+          }
           if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
             this.blocked = true;
             this.wanted = false;
@@ -427,6 +486,7 @@ if (typeof document !== 'undefined') {
         };
 
         this.rec = rec;
+        this.checkLocal();
       },
 
       start() {
@@ -493,6 +553,29 @@ if (typeof document !== 'undefined') {
           break;
         default: break;
       }
+    }
+
+    /** Affiche où se fait la reconnaissance (utile pour le test terrain). */
+    function renderVoiceMode() {
+      const el = $('voice-mode');
+      const texts = {
+        local: 'Reconnaissance vocale : sur le téléphone',
+        downloading: 'Reconnaissance vocale : en ligne (téléchargement du français pour le téléphone en cours…)',
+        downloadable: 'Reconnaissance vocale : en ligne (le français sera téléchargé sur le téléphone au démarrage du match)',
+        cloud: 'Reconnaissance vocale : en ligne (mode « sur le téléphone » non disponible)',
+        unsupported: 'Reconnaissance vocale : en ligne (mode « sur le téléphone » non pris en charge par ce navigateur)',
+      };
+      let key = Voice.mode === 'local' ? 'local' : 'cloud';
+      if (Voice.mode !== 'local') {
+        if (Voice.localStatus === 'downloading' || Voice.localStatus === 'downloadable') key = Voice.localStatus;
+        if (Voice.localStatus === 'unsupported') key = 'unsupported';
+      }
+      const known = Voice.available && Voice.localStatus !== 'unknown';
+      el.hidden = !known;
+      $('mic-mode-wrap').hidden = !known;
+      if (!known) return;
+      el.textContent = texts[key];
+      $('mic-mode').textContent = Voice.mode === 'local' ? 'sur le téléphone' : 'en ligne';
     }
 
     let heardTimer = null;
@@ -701,6 +784,7 @@ if (typeof document !== 'undefined') {
       $('setup-form').addEventListener('submit', (e) => {
         e.preventDefault();
         Beep.unlock();
+        Voice.installLocal();
         startMatch();
       });
 
