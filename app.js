@@ -361,73 +361,158 @@ if (typeof document !== 'undefined') {
 
     /* ---------- Reconnaissance vocale ---------- */
 
-    const Voice = {
+    /** Traite une phrase reconnue, quel que soit le moteur. */
+    function handleTranscript(transcript, alternatives) {
+      const shown = transcript.replace(/\[unk\]/g, '…').trim();
+      if (!shown) return;
+      if (Speaker.busy()) {
+        showHeard(shown, 'ignoré pendant l\'annonce');
+        return;
+      }
+      let cmd = null;
+      for (let a = 0; a < alternatives.length && !cmd; a++) cmd = detectCommand(alternatives[a]);
+      showHeard(shown, cmd ? null : 'non reconnu');
+      if (cmd) handleCommand(cmd, 'voice');
+    }
+
+    function loadScript(src) {
+      return new Promise((resolve, reject) => {
+        const el = document.createElement('script');
+        el.src = src;
+        el.onload = resolve;
+        el.onerror = reject;
+        document.head.appendChild(el);
+      });
+    }
+
+    /*
+     * Moteur 1 (principal) : Vosk, reconnaissance sur le téléphone.
+     * Le micro reste ouvert en continu et le moteur ne cherche que nos commandes :
+     * pas de coupure/relance du micro entre les phrases, donc pas de bip système Android.
+     * Le modèle (~42 Mo) est téléchargé au premier lancement puis gardé par le navigateur.
+     */
+    const VOSK_SCRIPT = 'vendor/vosk.js';
+    const VOSK_MODEL = 'models/vosk-model-small-fr-0.22.tar.gz';
+    const VOSK_GRAMMAR = JSON.stringify(['point bleu', 'point rouge', 'annule', 'annuler', '[unk]']);
+
+    const LocalVoice = {
+      status: 'idle', // idle | loading | ready | failed
+      model: null,
+      ctx: null,
+      stream: null,
+      source: null,
+      node: null,
+      recognizer: null,
+      running: false,
+      loading: null,
+
+      get supported() {
+        return !!(window.WebAssembly && window.Worker && navigator.mediaDevices
+          && navigator.mediaDevices.getUserMedia && (window.AudioContext || window.webkitAudioContext));
+      },
+
+      load() {
+        if (this.loading) return this.loading;
+        if (!this.supported) {
+          this.status = 'failed';
+          renderVoiceMode();
+          return Promise.resolve();
+        }
+        this.status = 'loading';
+        renderVoiceMode();
+        this.loading = loadScript(VOSK_SCRIPT)
+          .then(() => new Promise((resolve, reject) => {
+            const model = new window.Vosk.Model(VOSK_MODEL, -1); // -1 : pas de journaux techniques
+            model.on('load', (m) => (m.result ? resolve(model) : reject(new Error('load'))));
+            model.on('error', reject);
+          }))
+          .then((model) => {
+            this.model = model;
+            this.status = 'ready';
+          })
+          .catch(() => { this.status = 'failed'; })
+          .then(() => {
+            renderVoiceMode();
+            Mic.engineChanged();
+          });
+        return this.loading;
+      },
+
+      /** Ouvre le micro et alimente le moteur. Lève une erreur si le micro est refusé. */
+      async start() {
+        if (this.status !== 'ready' || this.running) return;
+        this.running = true;
+        const AC = window.AudioContext || window.webkitAudioContext;
+        // Créé avant tout "await" pour profiter du geste utilisateur en cours.
+        const ctx = new AC();
+        this.ctx = ctx;
+        try {
+          this.stream = await navigator.mediaDevices.getUserMedia({
+            audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
+          });
+        } catch (e) {
+          this.stop();
+          throw e;
+        }
+        if (!this.running || this.ctx !== ctx) { // arrêté pendant la demande d'accès au micro
+          this.stream.getTracks().forEach((t) => t.stop());
+          return;
+        }
+        if (ctx.state === 'suspended') ctx.resume().catch(() => {});
+        const rec = new this.model.KaldiRecognizer(ctx.sampleRate, VOSK_GRAMMAR);
+        rec.on('result', (m) => {
+          const text = (m.result && m.result.text) || '';
+          handleTranscript(text, [text]);
+        });
+        this.recognizer = rec;
+        this.source = ctx.createMediaStreamSource(this.stream);
+        this.node = ctx.createScriptProcessor(4096, 1, 1);
+        this.node.onaudioprocess = (e) => {
+          // Pendant nos annonces (et juste après), le son n'est pas transmis : anti-écho.
+          if (!Speaker.busy()) rec.acceptWaveform(e.inputBuffer);
+        };
+        this.source.connect(this.node);
+        this.node.connect(ctx.destination);
+        const track = this.stream.getAudioTracks()[0];
+        if (track) track.onended = () => Mic.restart();
+        setMicStatus('listening');
+      },
+
+      stop() {
+        this.running = false;
+        if (this.node) { this.node.onaudioprocess = null; this.node.disconnect(); }
+        if (this.source) this.source.disconnect();
+        if (this.stream) this.stream.getTracks().forEach((t) => { t.onended = null; t.stop(); });
+        if (this.recognizer) { try { this.recognizer.remove(); } catch (e) { /* ignore */ } }
+        if (this.ctx) this.ctx.close().catch(() => {});
+        this.node = this.source = this.stream = this.recognizer = this.ctx = null;
+      },
+
+      /** Au retour au premier plan : relance si Android a coupé le micro ou suspendu l'audio. */
+      resume() {
+        if (!this.running) return;
+        const track = this.stream && this.stream.getAudioTracks()[0];
+        if (track && track.readyState === 'ended') Mic.restart();
+        else if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+      },
+    };
+
+    /*
+     * Moteur 2 (secours) : reconnaissance de Chrome, en ligne. Utilisé pendant le premier
+     * téléchargement du modèle ou si Vosk ne peut pas fonctionner.
+     */
+    const CloudVoice = {
       SR: window.SpeechRecognition || window.webkitSpeechRecognition || null,
       rec: null,
       wanted: false,
-      blocked: false,   // permission refusée / pas de micro : on n'insiste plus
       startedAt: 0,
       quickFails: 0,
       restartTimer: null,
-      // Reconnaissance sur l'appareil (Chrome récent) : 'local' si active, sinon 'cloud'.
-      mode: 'cloud',
-      // available | downloadable | downloading | unavailable | unsupported | unknown
-      localStatus: 'unknown',
 
       get available() { return !!this.SR; },
 
-      /** L'API « sur l'appareil » existe-t-elle dans ce navigateur ? */
-      get localSupported() {
-        return !!(this.SR && typeof this.SR.available === 'function'
-          && typeof this.SR.install === 'function' && this.rec && 'processLocally' in this.rec);
-      },
-
-      /** Vérifie si le français est reconnaissable sur l'appareil, et l'active si oui. */
-      async checkLocal() {
-        if (!this.localSupported) {
-          this.localStatus = 'unsupported';
-          renderVoiceMode();
-          return;
-        }
-        try {
-          this.localStatus = await this.SR.available({ langs: [LANG], processLocally: true });
-        } catch (e) {
-          this.localStatus = 'unavailable';
-        }
-        if (this.localStatus === 'available') this.setMode('local');
-        renderVoiceMode();
-      },
-
-      /** Télécharge le français pour l'appareil. Doit être appelé pendant un geste utilisateur. */
-      installLocal() {
-        if (!this.localSupported || this.localStatus !== 'downloadable') return;
-        this.localStatus = 'downloading';
-        renderVoiceMode();
-        this.SR.install({ langs: [LANG], processLocally: true })
-          .then((ok) => {
-            this.localStatus = ok ? 'available' : 'unavailable';
-            if (ok) this.setMode('local');
-          })
-          .catch(() => { this.localStatus = 'unavailable'; })
-          .then(() => renderVoiceMode());
-      },
-
-      setMode(mode) {
-        if (!this.rec || this.mode === mode) return;
-        this.mode = mode;
-        this.rec.processLocally = mode === 'local';
-        renderVoiceMode();
-        // Relance pour appliquer le nouveau mode tout de suite (onend redémarre l'écoute).
-        if (this.wanted) {
-          try { this.rec.abort(); } catch (e) { /* ignore */ }
-        }
-      },
-
       init() {
-        if (!this.SR) {
-          setMicStatus('unavailable');
-          return;
-        }
+        if (!this.SR) return;
         const rec = new this.SR();
         rec.lang = LANG;
         rec.continuous = true;
@@ -443,39 +528,22 @@ if (typeof document !== 'undefined') {
           for (let i = e.resultIndex; i < e.results.length; i++) {
             const result = e.results[i];
             if (!result.isFinal) continue;
-            const transcript = result[0].transcript;
-            if (Speaker.busy()) {
-              showHeard(transcript, 'ignoré pendant l\'annonce');
-              continue;
-            }
-            let cmd = null;
-            for (let a = 0; a < result.length && !cmd; a++) cmd = detectCommand(result[a].transcript);
-            showHeard(transcript, cmd ? null : 'non reconnu');
-            if (cmd) handleCommand(cmd, 'voice');
+            const alternatives = [];
+            for (let a = 0; a < result.length; a++) alternatives.push(result[a].transcript);
+            handleTranscript(result[0].transcript, alternatives);
           }
         };
 
         rec.onerror = (e) => {
-          // Échec du mode « sur l'appareil » : on revient au service en ligne sans bloquer le vocal.
-          if (this.mode === 'local'
-            && (e.error === 'language-not-supported' || e.error === 'service-not-allowed')) {
-            this.localStatus = 'unavailable';
-            this.setMode('cloud');
-            return;
-          }
           if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
-            this.blocked = true;
             this.wanted = false;
-            setMicStatus('denied', e.error);
+            Mic.blocked(e.error);
           }
           // Autres erreurs (no-speech, network, aborted...) : onend relancera.
         };
 
         rec.onend = () => {
-          if (!this.wanted || this.blocked) {
-            if (!this.blocked) setMicStatus('off');
-            return;
-          }
+          if (!this.wanted) return;
           // Session coupée par le navigateur : on relance automatiquement.
           const shortLived = Date.now() - this.startedAt < 1500;
           this.quickFails = shortLived ? this.quickFails + 1 : 0;
@@ -486,11 +554,10 @@ if (typeof document !== 'undefined') {
         };
 
         this.rec = rec;
-        this.checkLocal();
       },
 
       start() {
-        if (!this.rec || this.blocked) return;
+        if (!this.rec) return;
         this.wanted = true;
         try {
           this.rec.start();
@@ -505,7 +572,88 @@ if (typeof document !== 'undefined') {
         if (this.rec) {
           try { this.rec.abort(); } catch (e) { /* ignore */ }
         }
-        if (!this.blocked && this.available) setMicStatus('off');
+      },
+    };
+
+    /* Choix du moteur : Vosk dès qu'il est prêt, sinon Chrome. Jamais les deux en même temps. */
+    const Mic = {
+      wanted: false,
+      engine: null,      // 'local' | 'cloud' | null
+      isBlocked: false,  // micro refusé ou absent : on n'insiste plus
+
+      get anyEngine() {
+        return LocalVoice.status === 'ready' || LocalVoice.status === 'loading' || CloudVoice.available;
+      },
+
+      start() {
+        this.wanted = true;
+        if (this.isBlocked) return;
+        if (LocalVoice.status === 'ready') {
+          if (this.engine === 'local') return;
+          CloudVoice.stop();
+          this.engine = 'local';
+          LocalVoice.start().catch((e) => {
+            if (e && (e.name === 'NotAllowedError' || e.name === 'SecurityError')) this.blocked('not-allowed');
+            else if (e && e.name === 'NotFoundError') this.blocked('audio-capture');
+            else {
+              // Vosk inutilisable ici : on bascule sur Chrome.
+              LocalVoice.stop();
+              LocalVoice.status = 'failed';
+              this.engine = null;
+              renderVoiceMode();
+              this.start();
+            }
+          });
+        } else if (CloudVoice.available) {
+          this.engine = 'cloud';
+          CloudVoice.start();
+        } else if (LocalVoice.status !== 'loading') {
+          setMicStatus('unavailable');
+        }
+        renderVoiceMode();
+      },
+
+      stop() {
+        this.wanted = false;
+        this.engine = null;
+        LocalVoice.stop();
+        CloudVoice.stop();
+        if (!this.isBlocked) setMicStatus(this.anyEngine ? 'off' : 'unavailable');
+        renderVoiceMode();
+      },
+
+      restart() {
+        const wanted = this.wanted;
+        LocalVoice.stop();
+        CloudVoice.stop();
+        this.engine = null;
+        if (wanted) this.start();
+      },
+
+      /** Le moteur Vosk vient d'être prêt (ou a échoué) : on bascule si besoin. */
+      engineChanged() {
+        if (!this.wanted || this.isBlocked) {
+          if (!this.wanted && !this.isBlocked && !this.anyEngine) setMicStatus('unavailable');
+          return;
+        }
+        if (LocalVoice.status === 'ready' && this.engine !== 'local') this.restart();
+        else if (LocalVoice.status === 'failed' && this.engine !== 'cloud') this.restart();
+      },
+
+      blocked(reason) {
+        this.isBlocked = true;
+        this.engine = null;
+        LocalVoice.stop();
+        CloudVoice.stop();
+        setMicStatus('denied', reason);
+        renderVoiceMode();
+      },
+
+      /** Retour au premier plan (veille, autre appli). */
+      resume() {
+        if (!this.wanted || this.isBlocked) return;
+        if (this.engine === 'local') LocalVoice.resume();
+        else this.start();
       },
     };
 
@@ -555,27 +703,32 @@ if (typeof document !== 'undefined') {
       }
     }
 
-    /** Affiche où se fait la reconnaissance (utile pour le test terrain). */
+    /** Affiche quel moteur de reconnaissance est utilisé (utile pour le test terrain). */
     function renderVoiceMode() {
       const el = $('voice-mode');
       const texts = {
-        local: 'Reconnaissance vocale : sur le téléphone',
-        downloading: 'Reconnaissance vocale : en ligne (téléchargement du français pour le téléphone en cours…)',
-        downloadable: 'Reconnaissance vocale : en ligne (le français sera téléchargé sur le téléphone au démarrage du match)',
-        cloud: 'Reconnaissance vocale : en ligne (mode « sur le téléphone » non disponible)',
-        unsupported: 'Reconnaissance vocale : en ligne (mode « sur le téléphone » non pris en charge par ce navigateur)',
+        loading: 'Moteur vocal du téléphone : téléchargement en cours (environ 42 Mo, une seule fois, '
+          + 'de préférence en wifi). En attendant, la reconnaissance en ligne de Chrome est utilisée.',
+        ready: 'Moteur vocal du téléphone : prêt (fonctionne aussi sans réseau).',
+        failed: CloudVoice.available
+          ? 'Moteur vocal du téléphone indisponible : reconnaissance en ligne de Chrome utilisée.'
+          : '',
       };
-      let key = Voice.mode === 'local' ? 'local' : 'cloud';
-      if (Voice.mode !== 'local') {
-        if (Voice.localStatus === 'downloading' || Voice.localStatus === 'downloadable') key = Voice.localStatus;
-        if (Voice.localStatus === 'unsupported') key = 'unsupported';
-      }
-      const known = Voice.available && Voice.localStatus !== 'unknown';
-      el.hidden = !known;
-      $('mic-mode-wrap').hidden = !known;
-      if (!known) return;
-      el.textContent = texts[key];
-      $('mic-mode').textContent = Voice.mode === 'local' ? 'sur le téléphone' : 'en ligne';
+      const text = texts[LocalVoice.status] || '';
+      el.textContent = text;
+      el.hidden = !text;
+      if (LocalVoice.status === 'failed' && !CloudVoice.available) showNoVoiceWarning();
+      const label = Mic.engine === 'local' ? 'sur le téléphone' : Mic.engine === 'cloud' ? 'en ligne' : '';
+      $('mic-mode').textContent = label;
+      $('mic-mode-wrap').hidden = !label;
+    }
+
+    function showNoVoiceWarning() {
+      setMicStatus('unavailable');
+      const w = $('setup-warning');
+      w.textContent = 'Reconnaissance vocale non disponible sur ce navigateur : '
+        + 'le match se jouera avec les zones tactiles uniquement (Chrome sur Android recommandé).';
+      w.hidden = false;
     }
 
     let heardTimer = null;
@@ -713,12 +866,12 @@ if (typeof document !== 'undefined') {
       render();
       showScreen('game');
       save();
-      Voice.start();
+      Mic.start();
       announce('début du match', 'point');
     }
 
     function backToSetup() {
-      Voice.stop();
+      Mic.stop();
       Speaker.supported && window.speechSynthesis.cancel();
       app.history = [];
       app.state = initialState();
@@ -764,13 +917,11 @@ if (typeof document !== 'undefined') {
 
     function init() {
       Speaker.init();
-      Voice.init();
+      CloudVoice.init();
+      LocalVoice.load();
 
-      if (!Voice.available) {
-        const w = $('setup-warning');
-        w.textContent = 'Reconnaissance vocale non disponible sur ce navigateur : '
-          + 'le match se jouera avec les zones tactiles uniquement (Chrome sur Android recommandé).';
-        w.hidden = false;
+      if (!CloudVoice.available && !LocalVoice.supported) {
+        showNoVoiceWarning();
       } else if (!window.isSecureContext) {
         const w = $('setup-warning');
         w.textContent = 'Le micro nécessite une connexion HTTPS : ouvrez l\'application via son adresse https://.';
@@ -784,7 +935,6 @@ if (typeof document !== 'undefined') {
       $('setup-form').addEventListener('submit', (e) => {
         e.preventDefault();
         Beep.unlock();
-        Voice.installLocal();
         startMatch();
       });
 
@@ -807,7 +957,7 @@ if (typeof document !== 'undefined') {
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState !== 'visible' || app.screen === 'setup') return;
         ScreenLock.request();
-        if (Voice.wanted) Voice.start();
+        Mic.resume();
       });
 
       if (restore()) {
@@ -816,7 +966,7 @@ if (typeof document !== 'undefined') {
         overlay.addEventListener('click', () => {
           overlay.hidden = true;
           Beep.unlock();
-          Voice.start();
+          Mic.start();
           const s = app.state;
           if (!s.winner) {
             const text = s.tiebreak
