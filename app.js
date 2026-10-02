@@ -272,7 +272,8 @@ if (typeof document !== 'undefined') {
       history: [],   // [{ team, source, type }]
       state: initialState(),
       counters: { voice: 0, touch: 0, voiceUndo: 0, touchUndo: 0 },
-    };
+      log: [],
+    };window.app = app;
 
     /* ---------- Son de confirmation ---------- */
 
@@ -443,13 +444,20 @@ if (typeof document !== 'undefined') {
           for (let i = e.resultIndex; i < e.results.length; i++) {
             const result = e.results[i];
             if (!result.isFinal) continue;
-            const transcript = result[0].transcript;
+            const transcripts = Array.from(result, (alt) => alt.transcript);
+            const transcript = transcripts[0];
+            const heard = transcripts.join(' / ');
             if (Speaker.busy()) {
               showHeard(transcript, 'ignoré pendant l\'annonce');
               continue;
             }
+
             let cmd = null;
-            for (let a = 0; a < result.length && !cmd; a++) cmd = detectCommand(result[a].transcript);
+            for (const t of transcripts) {
+              cmd = detectCommand(t);
+              if (cmd) break;
+            }
+            addLog('voice',heard, cmd || 'unknown');
             showHeard(transcript, cmd ? null : 'non reconnu');
             if (cmd) handleCommand(cmd, 'voice');
           }
@@ -737,8 +745,16 @@ if (typeof document !== 'undefined') {
           names: app.names,
           history: app.history,
           counters: app.counters,
+          log: app.log,
         }));
       } catch (e) { /* stockage indisponible : sans conséquence */ }
+    }
+
+    function addLog(src, text, result) {
+      if (app.log.length > 1999) app.log.shift();
+      const newLog = {t: Date.now(), src, text, result};
+      app.log.push(newLog);
+      save()
     }
 
     function restore() {
