@@ -264,6 +264,7 @@ if (typeof document !== 'undefined') {
     const SPEECH_MAX_MS = 6000;    // durée max supposée d'une annonce
     const LANG = 'fr-FR';
     const LOG_MAX = 1999;
+    const ARCHIVES_MAX = 10;
 
     const $ = (id) => document.getElementById(id);
 
@@ -274,6 +275,7 @@ if (typeof document !== 'undefined') {
       state: initialState(),
       counters: { voice: 0, touch: 0, voiceUndo: 0, touchUndo: 0 },
       log: [],
+      archives: []
     };window.app = app;
 
     /* ---------- Son de confirmation ---------- */
@@ -680,6 +682,7 @@ if (typeof document !== 'undefined') {
 
     function handleCommand(cmd, source) {
       if (app.screen === 'setup') return;
+      if (source === 'touch') addLog('touch', ' ', cmd);
       if (cmd === 'undo') undo(source);
       else scorePoint(cmd, source);
     }
@@ -729,6 +732,16 @@ if (typeof document !== 'undefined') {
     }
 
     function backToSetup() {
+      if (app.log.length > 0) {
+        console.log('archive', app.log.length);
+        const archive = {
+          names: app.names,
+          state: app.state,
+          log: app.log,
+        };
+        app.archives.push(archive);
+        if (app.archives.length > ARCHIVES_MAX) app.archives.shift();
+      }
       Voice.stop();
       Speaker.supported && window.speechSynthesis.cancel();
       app.history = [];
@@ -749,6 +762,7 @@ if (typeof document !== 'undefined') {
           history: app.history,
           counters: app.counters,
           log: app.log,
+          archives: app.archives,
         }));
       } catch (e) { /* stockage indisponible : sans conséquence */ }
     }
@@ -767,11 +781,12 @@ if (typeof document !== 'undefined') {
         app.names = data.names || app.names;
         $('name-blue').value = app.names.blue || '';
         $('name-red').value = app.names.red || '';
+        app.log = data.log || [];
+        app.archives = data.archives || [];
         if (data.screen === 'setup' || !Array.isArray(data.history)) return false;
         app.history = data.history.filter((h) => h && (h.team === 'blue' || h.team === 'red'));
         app.counters = Object.assign(app.counters, data.counters);
         app.state = replay(app.history).state;
-        app.log = data.log || [];
         render();
         showScreen(app.state.winner ? 'end' : 'game');
         return true;
