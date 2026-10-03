@@ -263,6 +263,7 @@ if (typeof document !== 'undefined') {
     const ANNOUNCE_DELAY_MS = 180; // le bip passe avant l'annonce
     const SPEECH_MAX_MS = 6000;    // durée max supposée d'une annonce
     const LANG = 'fr-FR';
+    const LOG_MAX = 1999;
 
     const $ = (id) => document.getElementById(id);
 
@@ -448,6 +449,7 @@ if (typeof document !== 'undefined') {
             const transcript = transcripts[0];
             const heard = transcripts.join(' / ');
             if (Speaker.busy()) {
+              addLog('voice', heard, 'ignored');
               showHeard(transcript, 'ignoré pendant l\'annonce');
               continue;
             }
@@ -457,7 +459,7 @@ if (typeof document !== 'undefined') {
               cmd = detectCommand(t);
               if (cmd) break;
             }
-            addLog('voice',heard, cmd || 'unknown');
+            addLog('voice', heard, cmd || 'unknown');
             showHeard(transcript, cmd ? null : 'non reconnu');
             if (cmd) handleCommand(cmd, 'voice');
           }
@@ -718,6 +720,7 @@ if (typeof document !== 'undefined') {
       app.history = [];
       app.state = initialState();
       app.counters = { voice: 0, touch: 0, voiceUndo: 0, touchUndo: 0 };
+      app.log = [];
       render();
       showScreen('game');
       save();
@@ -751,10 +754,10 @@ if (typeof document !== 'undefined') {
     }
 
     function addLog(src, text, result) {
-      if (app.log.length > 1999) app.log.shift();
+      if (app.log.length > LOG_MAX) app.log.shift();
       const newLog = {t: Date.now(), src, text, result};
       app.log.push(newLog);
-      save()
+      save();
     }
 
     function restore() {
@@ -768,6 +771,7 @@ if (typeof document !== 'undefined') {
         app.history = data.history.filter((h) => h && (h.team === 'blue' || h.team === 'red'));
         app.counters = Object.assign(app.counters, data.counters);
         app.state = replay(app.history).state;
+        app.log = data.log || [];
         render();
         showScreen(app.state.winner ? 'end' : 'game');
         return true;
