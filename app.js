@@ -69,6 +69,28 @@ const TIEBREAK_POINTS = 7;
  * @property {LogEntry[]} log
  */
 
+/**
+ * @typedef {'point'|'deuce'|'advantage'|'tiebreak-point'|'game'|'tiebreak-start'|'set'|'match'|'ignored'} EventType
+ */
+
+/**
+ * Ce qui vient de se passer après un point.
+ * @typedef {Object} GameEvent
+ * @property {EventType} type
+ * @property {Team} team   l'équipe qui a marqué
+ */
+
+/**
+ * Résultat d'un point : le nouvel état et l'événement.
+ * @typedef {Object} PointResult
+ * @property {State} state
+ * @property {GameEvent} event
+ */
+
+/**
+ * @typedef {'blue'|'red'|'undo'} Command
+ */
+
 /** @returns {State} */
 function initialState() {
   return {
@@ -81,6 +103,10 @@ function initialState() {
   };
 }
 
+/**
+ * @param {State} s
+ * @returns {State}
+ */
 function cloneState(s) {
   return JSON.parse(JSON.stringify(s));
 }
@@ -89,6 +115,9 @@ function cloneState(s) {
  * Applique un point pour `team` ('blue' | 'red').
  * Retourne { state, event } ; event.type parmi :
  *   point, deuce, advantage, tiebreak-point, game, tiebreak-start, set, match, ignored
+ * @param {State} prev
+ * @param {Team} team
+ * @returns {PointResult}
  */
 function applyPoint(prev, team) {
   const s = cloneState(prev);
@@ -111,6 +140,12 @@ function applyPoint(prev, team) {
   return { state: s, event: { type: 'point', team } };
 }
 
+/**
+ * Jeu gagné par `team` (modifie `s` directement).
+ * @param {State} s
+ * @param {Team} team
+ * @returns {PointResult}
+ */
 function winGame(s, team) {
   const other = OTHER[team];
   const tiebreakScore = s.tiebreak ? { blue: s.points.blue, red: s.points.red } : null;
@@ -140,7 +175,11 @@ function winGame(s, team) {
   return { state: s, event: { type: 'game', team } };
 }
 
-/** Rejoue une pile de points (['blue', 'red', ...] ou [{team}, ...]). */
+/**
+ * Rejoue une pile de points (['blue', 'red', ...] ou [{team}, ...]).
+ * @param {Array<Team|{team: Team}>} history
+ * @returns {{state: State, event: GameEvent|null}}
+ */
 function replay(history) {
   let state = initialState();
   let event = null;
@@ -159,6 +198,10 @@ const UNITS = ['zéro', 'un', 'deux', 'trois', 'quatre', 'cinq', 'six', 'sept', 
   'neuf', 'dix', 'onze', 'douze', 'treize', 'quatorze', 'quinze', 'seize'];
 const TENS = { 2: 'vingt', 3: 'trente', 4: 'quarante', 5: 'cinquante', 6: 'soixante' };
 
+/**
+ * @param {number} n
+ * @returns {string}
+ */
 function numberFr(n) {
   if (n <= 16) return UNITS[n];
   if (n < 20) return 'dix-' + UNITS[n - 10];
@@ -177,7 +220,11 @@ function numberFr(n) {
 const POINT_WORDS = ['zéro', 'quinze', 'trente', 'quarante'];
 const POINT_DIGITS = ['0', '15', '30', '40'];
 
-/** Score de points d'un jeu normal, bleu en premier : "quinze zéro", "égalité"... */
+/**
+ * Score de points d'un jeu normal, bleu en premier : "quinze zéro", "égalité"...
+ * @param {Pair} points
+ * @returns {string}
+ */
 function gamePointsPhrase(points) {
   const b = points.blue;
   const r = points.red;
@@ -189,6 +236,10 @@ function gamePointsPhrase(points) {
   return POINT_WORDS[b] + ' ' + POINT_WORDS[r];
 }
 
+/**
+ * @param {Pair} points
+ * @returns {string}
+ */
 function tiebreakPhrase(points) {
   const b = points.blue;
   const r = points.red;
@@ -196,7 +247,13 @@ function tiebreakPhrase(points) {
   return numberFr(b) + ' à ' + numberFr(r);
 }
 
-/** "quatre jeux à trois", "un jeu partout", "deux sets à zéro"... (bleu en premier) */
+/**
+ * "quatre jeux à trois", "un jeu partout", "deux sets à zéro"... (bleu en premier)
+ * @param {Pair} counts
+ * @param {string} singular
+ * @param {string} plural
+ * @returns {string}
+ */
 function countPhrase(counts, singular, plural) {
   const b = counts.blue;
   const r = counts.red;
@@ -205,10 +262,17 @@ function countPhrase(counts, singular, plural) {
   return numberFr(b) + ' ' + word + ' à ' + numberFr(r);
 }
 
+/** @param {Pair} games @returns {string} */
 const gamesPhrase = (games) => countPhrase(games, 'jeu', 'jeux');
+/** @param {Pair} sets @returns {string} */
 const setsPhrase = (sets) => countPhrase(sets, 'set', 'sets');
 
-/** Texte de l'annonce vocale après un point. */
+/**
+ * Texte de l'annonce vocale après un point.
+ * @param {GameEvent} event
+ * @param {State} state
+ * @returns {string}
+ */
 function announceEvent(event, state) {
   const color = COLOR_WORD[event.team];
   switch (event.type) {
@@ -224,7 +288,13 @@ function announceEvent(event, state) {
   }
 }
 
-/** Texte de l'annonce après annulation. `undoneType` = type d'événement du point retiré. */
+/**
+ * Texte de l'annonce après annulation. `undoneType` = type d'événement du point retiré.
+ * @param {EventType} undoneType
+ * @param {State} state
+ * @param {number} remaining   nombre de points restant dans l'historique
+ * @returns {string}
+ */
 function undoPhrase(undoneType, state, remaining) {
   if (remaining === 0) return 'point annulé, retour au début du match';
   let text;
@@ -238,7 +308,11 @@ function undoPhrase(undoneType, state, remaining) {
   return 'point annulé, retour à ' + text;
 }
 
-/** Points à afficher à l'écran : { blue, red, banner }. */
+/**
+ * Points à afficher à l'écran : { blue, red, banner }.
+ * @param {State} state
+ * @returns {{blue: string, red: string, banner: string}}
+ */
 function displayPoints(state) {
   const b = state.points.blue;
   const r = state.points.red;
@@ -256,7 +330,12 @@ function displayPoints(state) {
   return { blue: POINT_DIGITS[b], red: POINT_DIGITS[r], banner: '' };
 }
 
-/** "6-4" ou "7-6 (7-5)" du point de vue de `first`. */
+/**
+ * "6-4" ou "7-6 (7-5)" du point de vue de `first`.
+ * @param {CompletedSet} set
+ * @param {Team} first
+ * @returns {string}
+ */
 function formatSet(set, first) {
   const second = OTHER[first];
   let txt = set[first] + '-' + set[second];
@@ -266,6 +345,10 @@ function formatSet(set, first) {
 
 /* ---------- Reconnaissance des commandes vocales ---------- */
 
+/**
+ * @param {string} text
+ * @returns {string}
+ */
 function normalize(text) {
   return String(text)
     .toLowerCase()
@@ -282,7 +365,11 @@ const COMMAND_PATTERNS = [
   { cmd: 'undo', re: /\bannule/ },
 ];
 
-/** Retourne 'blue' | 'red' | 'undo' | null (première commande trouvée dans le texte). */
+/**
+ * Retourne 'blue' | 'red' | 'undo' | null (première commande trouvée dans le texte).
+ * @param {string} text
+ * @returns {Command|null}
+ */
 function detectCommand(text) {
   const n = normalize(text);
   // Écho de notre propre annonce "point annulé, retour à ..." : à ignorer.
