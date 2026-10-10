@@ -14,6 +14,62 @@ const SETS_TO_WIN = 2;
 const GAMES_PER_SET = 6;
 const TIEBREAK_POINTS = 7;
 
+/* ---------- Formes des données (JSDoc, pour l'autocomplétion de l'éditeur) ---------- */
+
+/**
+ * @typedef {'blue'|'red'} Team
+ */
+
+/**
+ * Un score par équipe : points, jeux, sets...
+ * @typedef {Object} Pair
+ * @property {number} blue
+ * @property {number} red
+ */
+
+/**
+ * Un set terminé.
+ * @typedef {Object} CompletedSet
+ * @property {number} blue        jeux de l'équipe bleue
+ * @property {number} red         jeux de l'équipe rouge
+ * @property {Pair|null} tiebreak points du tie-break, ou null s'il n'y en a pas eu
+ */
+
+/**
+ * L'état du match à un instant donné.
+ * @typedef {Object} State
+ * @property {Pair} points                points du jeu en cours (ou du tie-break)
+ * @property {Pair} games                 jeux du set en cours
+ * @property {Pair} sets                  sets gagnés
+ * @property {boolean} tiebreak           true pendant un tie-break
+ * @property {CompletedSet[]} completedSets
+ * @property {Team|null} winner           null tant que le match n'est pas fini
+ */
+
+/**
+ * @typedef {Object} Names
+ * @property {string} blue
+ * @property {string} red
+ */
+
+/**
+ * Une ligne du journal.
+ * @typedef {Object} LogEntry
+ * @property {number} t          heure, en millisecondes (Date.now())
+ * @property {'voice'|'touch'} src
+ * @property {string} text       ce qui a été entendu ('' pour un toucher)
+ * @property {string} result     'blue' | 'red' | 'undo' | 'unknown' | 'ignored'
+ */
+
+/**
+ * Un match rangé dans les archives.
+ * @typedef {Object} Archive
+ * @property {Names} names
+ * @property {State} state
+ * @property {LogEntry[]} log
+ */
+
+/** @returns {State} */
 function initialState() {
   return {
     points: { blue: 0, red: 0 },  // points bruts du jeu courant (ou du tie-break)
@@ -274,7 +330,9 @@ if (typeof document !== 'undefined') {
       history: [],   // [{ team, source, type }]
       state: initialState(),
       counters: { voice: 0, touch: 0, voiceUndo: 0, touchUndo: 0 },
+      /** @type {LogEntry[]} */
       log: [],
+      /** @type {Archive[]} */
       archives: []
     };window.app = app;
 
@@ -767,6 +825,11 @@ if (typeof document !== 'undefined') {
       } catch (e) { /* stockage indisponible : sans conséquence */ }
     }
 
+    /**
+     * @param {'voice'|'touch'} src
+     * @param {string} text
+     * @param {string} result
+     */
     function addLog(src, text, result) {
       if (app.log.length > LOG_MAX) app.log.shift();
       const newLog = {t: Date.now(), src, text, result};
