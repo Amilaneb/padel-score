@@ -364,10 +364,11 @@ function formatScore(state) {
 }
 
 /**
+ * Texte complet du journal à envoyer : un en-tête, puis un bloc par match archivé.
  * @param {Archive[]} archives
- * @param {LogEntry[]} currentLog
+ * @returns {string}
  */
-function formatAllLogs(archives, currentLog) {
+function formatAllLogs(archives) {
 
   const logFile = [];
 
