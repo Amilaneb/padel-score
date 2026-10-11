@@ -9,6 +9,7 @@ HTML / CSS / JavaScript vanilla : aucun framework, aucune dépendance, aucun bui
 index.html      3 écrans : configuration → jeu → fin de match
 style.css       design fort contraste, score très grand
 app.js          moteur de score + reconnaissance/synthèse vocale + interface
+tests/          tests unitaires du moteur (node --test)
 manifest.json   manifest PWA (ajout à l'écran d'accueil, mode standalone)
 icons/          icônes 192 et 512 px
 ```
@@ -99,6 +100,18 @@ sécurisée, donc le micro y sera bloqué. Utiliser le débogage à distance de 
 - **Parcours de score** : tout se vérifie aux zones tactiles — 15/30/40, égalité, avantage et retour
   à l'égalité, jeu, set à 6-4 / 7-5 (pas à 6-5), tie-break à 6-6 (7 points, 2 d'écart, ex. 8-6),
   match en 2 ou 3 sets, puis « Annule » répété à travers une fin de jeu / set / match.
+
+## Tests
+
+Tests unitaires du moteur (règles du score, textes annoncés, reconnaissance des commandes, journal),
+avec le testeur intégré à Node (18 ou plus) — rien à installer :
+
+```bash
+node --test
+```
+
+Les fichiers sont dans `tests/`. Ils testent les fonctions de la partie 1 de `app.js`, exportées
+par `module.exports`.
 
 ## Déploiement sur GitHub Pages
 
