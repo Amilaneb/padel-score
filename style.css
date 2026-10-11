@@ -108,6 +108,8 @@ button {
 .help ul { margin: 4px 0 12px; padding-left: 22px; }
 .help strong { color: var(--fg); }
 
+#btn-share-logs { margin-top: 16px; }
+
 /* ---------- Écran de jeu ---------- */
 
 .screen-game {

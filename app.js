@@ -14,6 +14,84 @@ const SETS_TO_WIN = 2;
 const GAMES_PER_SET = 6;
 const TIEBREAK_POINTS = 7;
 
+/* ---------- Formes des données (JSDoc, pour l'autocomplétion de l'éditeur) ---------- */
+
+/**
+ * @typedef {'blue'|'red'} Team
+ */
+
+/**
+ * Un score par équipe : points, jeux, sets...
+ * @typedef {Object} Pair
+ * @property {number} blue
+ * @property {number} red
+ */
+
+/**
+ * Un set terminé.
+ * @typedef {Object} CompletedSet
+ * @property {number} blue        jeux de l'équipe bleue
+ * @property {number} red         jeux de l'équipe rouge
+ * @property {Pair|null} tiebreak points du tie-break, ou null s'il n'y en a pas eu
+ */
+
+/**
+ * L'état du match à un instant donné.
+ * @typedef {Object} State
+ * @property {Pair} points                points du jeu en cours (ou du tie-break)
+ * @property {Pair} games                 jeux du set en cours
+ * @property {Pair} sets                  sets gagnés
+ * @property {boolean} tiebreak           true pendant un tie-break
+ * @property {CompletedSet[]} completedSets
+ * @property {Team|null} winner           null tant que le match n'est pas fini
+ */
+
+/**
+ * @typedef {Object} Names
+ * @property {string} blue
+ * @property {string} red
+ */
+
+/**
+ * Une ligne du journal.
+ * @typedef {Object} LogEntry
+ * @property {number} t          heure, en millisecondes (Date.now())
+ * @property {'voice'|'touch'} src
+ * @property {string} text       ce qui a été entendu ('' pour un toucher)
+ * @property {string} result     'blue' | 'red' | 'undo' | 'unknown' | 'ignored'
+ */
+
+/**
+ * Un match rangé dans les archives.
+ * @typedef {Object} Archive
+ * @property {Names} names
+ * @property {State} state
+ * @property {LogEntry[]} log
+ */
+
+/**
+ * @typedef {'point'|'deuce'|'advantage'|'tiebreak-point'|'game'|'tiebreak-start'|'set'|'match'|'ignored'} EventType
+ */
+
+/**
+ * Ce qui vient de se passer après un point.
+ * @typedef {Object} GameEvent
+ * @property {EventType} type
+ * @property {Team} team   l'équipe qui a marqué
+ */
+
+/**
+ * Résultat d'un point : le nouvel état et l'événement.
+ * @typedef {Object} PointResult
+ * @property {State} state
+ * @property {GameEvent} event
+ */
+
+/**
+ * @typedef {'blue'|'red'|'undo'} Command
+ */
+
+/** @returns {State} */
 function initialState() {
   return {
     points: { blue: 0, red: 0 },  // points bruts du jeu courant (ou du tie-break)
@@ -25,6 +103,10 @@ function initialState() {
   };
 }
 
+/**
+ * @param {State} s
+ * @returns {State}
+ */
 function cloneState(s) {
   return JSON.parse(JSON.stringify(s));
 }
@@ -33,6 +115,9 @@ function cloneState(s) {
  * Applique un point pour `team` ('blue' | 'red').
  * Retourne { state, event } ; event.type parmi :
  *   point, deuce, advantage, tiebreak-point, game, tiebreak-start, set, match, ignored
+ * @param {State} prev
+ * @param {Team} team
+ * @returns {PointResult}
  */
 function applyPoint(prev, team) {
   const s = cloneState(prev);
@@ -55,6 +140,12 @@ function applyPoint(prev, team) {
   return { state: s, event: { type: 'point', team } };
 }
 
+/**
+ * Jeu gagné par `team` (modifie `s` directement).
+ * @param {State} s
+ * @param {Team} team
+ * @returns {PointResult}
+ */
 function winGame(s, team) {
   const other = OTHER[team];
   const tiebreakScore = s.tiebreak ? { blue: s.points.blue, red: s.points.red } : null;
@@ -84,7 +175,11 @@ function winGame(s, team) {
   return { state: s, event: { type: 'game', team } };
 }
 
-/** Rejoue une pile de points (['blue', 'red', ...] ou [{team}, ...]). */
+/**
+ * Rejoue une pile de points (['blue', 'red', ...] ou [{team}, ...]).
+ * @param {Array<Team|{team: Team}>} history
+ * @returns {{state: State, event: GameEvent|null}}
+ */
 function replay(history) {
   let state = initialState();
   let event = null;
@@ -103,6 +198,10 @@ const UNITS = ['zéro', 'un', 'deux', 'trois', 'quatre', 'cinq', 'six', 'sept', 
   'neuf', 'dix', 'onze', 'douze', 'treize', 'quatorze', 'quinze', 'seize'];
 const TENS = { 2: 'vingt', 3: 'trente', 4: 'quarante', 5: 'cinquante', 6: 'soixante' };
 
+/**
+ * @param {number} n
+ * @returns {string}
+ */
 function numberFr(n) {
   if (n <= 16) return UNITS[n];
   if (n < 20) return 'dix-' + UNITS[n - 10];
@@ -121,7 +220,11 @@ function numberFr(n) {
 const POINT_WORDS = ['zéro', 'quinze', 'trente', 'quarante'];
 const POINT_DIGITS = ['0', '15', '30', '40'];
 
-/** Score de points d'un jeu normal, bleu en premier : "quinze zéro", "égalité"... */
+/**
+ * Score de points d'un jeu normal, bleu en premier : "quinze zéro", "égalité"...
+ * @param {Pair} points
+ * @returns {string}
+ */
 function gamePointsPhrase(points) {
   const b = points.blue;
   const r = points.red;
@@ -133,6 +236,10 @@ function gamePointsPhrase(points) {
   return POINT_WORDS[b] + ' ' + POINT_WORDS[r];
 }
 
+/**
+ * @param {Pair} points
+ * @returns {string}
+ */
 function tiebreakPhrase(points) {
   const b = points.blue;
   const r = points.red;
@@ -140,7 +247,13 @@ function tiebreakPhrase(points) {
   return numberFr(b) + ' à ' + numberFr(r);
 }
 
-/** "quatre jeux à trois", "un jeu partout", "deux sets à zéro"... (bleu en premier) */
+/**
+ * "quatre jeux à trois", "un jeu partout", "deux sets à zéro"... (bleu en premier)
+ * @param {Pair} counts
+ * @param {string} singular
+ * @param {string} plural
+ * @returns {string}
+ */
 function countPhrase(counts, singular, plural) {
   const b = counts.blue;
   const r = counts.red;
@@ -149,10 +262,17 @@ function countPhrase(counts, singular, plural) {
   return numberFr(b) + ' ' + word + ' à ' + numberFr(r);
 }
 
+/** @param {Pair} games @returns {string} */
 const gamesPhrase = (games) => countPhrase(games, 'jeu', 'jeux');
+/** @param {Pair} sets @returns {string} */
 const setsPhrase = (sets) => countPhrase(sets, 'set', 'sets');
 
-/** Texte de l'annonce vocale après un point. */
+/**
+ * Texte de l'annonce vocale après un point.
+ * @param {GameEvent} event
+ * @param {State} state
+ * @returns {string}
+ */
 function announceEvent(event, state) {
   const color = COLOR_WORD[event.team];
   switch (event.type) {
@@ -168,7 +288,13 @@ function announceEvent(event, state) {
   }
 }
 
-/** Texte de l'annonce après annulation. `undoneType` = type d'événement du point retiré. */
+/**
+ * Texte de l'annonce après annulation. `undoneType` = type d'événement du point retiré.
+ * @param {EventType} undoneType
+ * @param {State} state
+ * @param {number} remaining   nombre de points restant dans l'historique
+ * @returns {string}
+ */
 function undoPhrase(undoneType, state, remaining) {
   if (remaining === 0) return 'point annulé, retour au début du match';
   let text;
@@ -182,7 +308,11 @@ function undoPhrase(undoneType, state, remaining) {
   return 'point annulé, retour à ' + text;
 }
 
-/** Points à afficher à l'écran : { blue, red, banner }. */
+/**
+ * Points à afficher à l'écran : { blue, red, banner }.
+ * @param {State} state
+ * @returns {{blue: string, red: string, banner: string}}
+ */
 function displayPoints(state) {
   const b = state.points.blue;
   const r = state.points.red;
@@ -200,16 +330,75 @@ function displayPoints(state) {
   return { blue: POINT_DIGITS[b], red: POINT_DIGITS[r], banner: '' };
 }
 
-/** "6-4" ou "7-6 (7-5)" du point de vue de `first`. */
-function formatSet(set, first) {
+/**
+ * "6-4" ou "7-6 (7-5)" du point de vue de `first`.
+ * @param {CompletedSet} set
+ * @param {Team} first
+ * @returns {string}
+ */
+function formatSet(set, first = 'blue') {
   const second = OTHER[first];
   let txt = set[first] + '-' + set[second];
   if (set.tiebreak) txt += ' (' + set.tiebreak[first] + '-' + set.tiebreak[second] + ')';
   return txt;
 }
 
+/** @param {LogEntry[]} logs */
+function formatLog(logs) {
+  return logs
+      .map((log, i) => {
+        const date = new Date(log.t).toLocaleTimeString('fr-FR');
+        const gap = i === 0 ? '' : '+' + Math.round((log.t - logs[i - 1].t)/1000) + 's';
+        return [date, gap, log.src, log.result, log.text].join('\t');
+      })
+      .join('\n');
+}
+
+/** @param {State} state */
+function formatScore(state) {
+  const gameParts = state.completedSets.map(s => formatSet(s, 'blue'));
+  if (state.winner === null) {
+    gameParts.push(`${state.games.blue}-${state.games.red}`);
+  }
+  return gameParts.join(', ') + (state.winner !== null ? ' (terminé)' : ' (abandonné)');
+}
+
+/**
+ * Texte complet du journal à envoyer : un en-tête, puis un bloc par match archivé.
+ * @param {Archive[]} archives
+ * @returns {string}
+ */
+function formatAllLogs(archives) {
+
+  const logFile = [];
+
+  const header = [
+    'Journal App',
+    archives.length + ' match(s)',
+    'envoyé le ' + new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+  ].join(' - ');
+  logFile.push(header);
+
+  for (const match of archives) {
+    const blueTeam = match.names.blue || 'Bleu';
+    const redTeam = match.names.red || 'Rouge';
+    const date = new Date(match.log[0].t).toLocaleDateString('fr-FR');
+    const score = formatScore(match.state);
+    const matchTitle = `=== ${blueTeam} vs ${redTeam} - ${date} - ${score} - ${match.log.length} entrées ===`;
+    logFile.push(matchTitle + '\n' + formatLog(match.log));
+  }
+
+  // ── 4. L'ASSEMBLAGE ──────────────────────────────────────────────────────
+  // On colle tous les morceaux de la liste, avec une ligne vide entre chaque
+  // (deux retours à la ligne), et on renvoie le texte obtenu.
+  return logFile.join('\n\n');
+}
 /* ---------- Reconnaissance des commandes vocales ---------- */
 
+/**
+ * @param {string} text
+ * @returns {string}
+ */
 function normalize(text) {
   return String(text)
     .toLowerCase()
@@ -226,7 +415,11 @@ const COMMAND_PATTERNS = [
   { cmd: 'undo', re: /\bannule/ },
 ];
 
-/** Retourne 'blue' | 'red' | 'undo' | null (première commande trouvée dans le texte). */
+/**
+ * Retourne 'blue' | 'red' | 'undo' | null (première commande trouvée dans le texte).
+ * @param {string} text
+ * @returns {Command|null}
+ */
 function detectCommand(text) {
   const n = normalize(text);
   // Écho de notre propre annonce "point annulé, retour à ..." : à ignorer.
@@ -247,7 +440,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     initialState, applyPoint, replay, numberFr, gamePointsPhrase, tiebreakPhrase,
     gamesPhrase, setsPhrase, announceEvent, undoPhrase, displayPoints, formatSet,
-    normalize, detectCommand,
+    normalize, detectCommand, formatLog,formatScore, formatAllLogs
   };
 }
 
@@ -263,6 +456,8 @@ if (typeof document !== 'undefined') {
     const ANNOUNCE_DELAY_MS = 180; // le bip passe avant l'annonce
     const SPEECH_MAX_MS = 6000;    // durée max supposée d'une annonce
     const LANG = 'fr-FR';
+    const LOG_MAX = 1999;
+    const ARCHIVES_MAX = 10;
 
     const $ = (id) => document.getElementById(id);
 
@@ -272,6 +467,10 @@ if (typeof document !== 'undefined') {
       history: [],   // [{ team, source, type }]
       state: initialState(),
       counters: { voice: 0, touch: 0, voiceUndo: 0, touchUndo: 0 },
+      /** @type {LogEntry[]} */
+      log: [],
+      /** @type {Archive[]} */
+      archives: [],
     };
 
     /* ---------- Son de confirmation ---------- */
@@ -443,13 +642,21 @@ if (typeof document !== 'undefined') {
           for (let i = e.resultIndex; i < e.results.length; i++) {
             const result = e.results[i];
             if (!result.isFinal) continue;
-            const transcript = result[0].transcript;
+            const transcripts = Array.from(result, (alt) => alt.transcript);
+            const transcript = transcripts[0];
+            const heard = transcripts.join(' / ');
             if (Speaker.busy()) {
+              addLog('voice', heard, 'ignored');
               showHeard(transcript, 'ignoré pendant l\'annonce');
               continue;
             }
+
             let cmd = null;
-            for (let a = 0; a < result.length && !cmd; a++) cmd = detectCommand(result[a].transcript);
+            for (const t of transcripts) {
+              cmd = detectCommand(t);
+              if (cmd) break;
+            }
+            addLog('voice', heard, cmd || 'unknown');
             showHeard(transcript, cmd ? null : 'non reconnu');
             if (cmd) handleCommand(cmd, 'voice');
           }
@@ -670,6 +877,7 @@ if (typeof document !== 'undefined') {
 
     function handleCommand(cmd, source) {
       if (app.screen === 'setup') return;
+      if (source === 'touch') addLog('touch', '', cmd);
       if (cmd === 'undo') undo(source);
       else scorePoint(cmd, source);
     }
@@ -710,6 +918,7 @@ if (typeof document !== 'undefined') {
       app.history = [];
       app.state = initialState();
       app.counters = { voice: 0, touch: 0, voiceUndo: 0, touchUndo: 0 };
+      app.log = [];
       render();
       showScreen('game');
       save();
@@ -718,6 +927,16 @@ if (typeof document !== 'undefined') {
     }
 
     function backToSetup() {
+      if (app.log.length > 0) {
+        const archive = {
+          names: app.names,
+          state: app.state,
+          log: app.log,
+        };
+        app.archives.push(archive);
+        app.log = [];
+        if (app.archives.length > ARCHIVES_MAX) app.archives.shift();
+      }
       Voice.stop();
       Speaker.supported && window.speechSynthesis.cancel();
       app.history = [];
@@ -725,7 +944,50 @@ if (typeof document !== 'undefined') {
       $('name-blue').value = app.names.blue;
       $('name-red').value = app.names.red;
       showScreen('setup');
+      updateShareButton();
       save();
+    }
+
+    function updateShareButton() {
+      const button = $('btn-share-logs');
+      button.hidden = (app.archives.length === 0);
+    }
+
+    function flashButton(message) {
+      const button = $('btn-share-logs');
+      button.textContent = message;
+      setTimeout(() => button.textContent = 'Envoyer les Logs', 1000);
+    }
+
+    async function shareLogs() {
+
+      const allLogs = formatAllLogs(app.archives);
+
+      // 2. Le nom du fichier, avec la date et l'heure d'envoi : journal-padel_11-10-2026_18h42.txt
+      const now = new Date();
+      const day = now.toLocaleDateString('fr-FR').replaceAll('/', '-');
+      const time = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }).replace(':', 'h');
+      const fileName = `journal-score_${day}_${time}.txt`;
+      const file = new File(
+          [allLogs],
+          fileName,
+          { type: "text/plain" }
+      );
+
+      const shareData = { files: [file], title: 'Journal Score' };
+      const canShareFile = navigator.canShare && navigator.canShare(shareData);
+
+      try {
+        if (canShareFile){
+          await navigator.share(shareData)
+        } else {
+          await navigator.clipboard.writeText(allLogs)
+          flashButton('Copié ✓');
+        }
+      } catch (e) {
+        if (e.name === 'AbortError') return;
+        flashButton('Envoi impossible');
+      }
     }
 
     /* ---------- Sauvegarde locale (survit à un rechargement) ---------- */
@@ -737,8 +999,22 @@ if (typeof document !== 'undefined') {
           names: app.names,
           history: app.history,
           counters: app.counters,
+          log: app.log,
+          archives: app.archives,
         }));
       } catch (e) { /* stockage indisponible : sans conséquence */ }
+    }
+
+    /**
+     * @param {'voice'|'touch'} src
+     * @param {string} text
+     * @param {string} result
+     */
+    function addLog(src, text, result) {
+      if (app.log.length > LOG_MAX) app.log.shift();
+      const newLog = {t: Date.now(), src, text, result};
+      app.log.push(newLog);
+      save();
     }
 
     function restore() {
@@ -748,6 +1024,8 @@ if (typeof document !== 'undefined') {
         app.names = data.names || app.names;
         $('name-blue').value = app.names.blue || '';
         $('name-red').value = app.names.red || '';
+        app.log = data.log || [];
+        app.archives = data.archives || [];
         if (data.screen === 'setup' || !Array.isArray(data.history)) return false;
         app.history = data.history.filter((h) => h && (h.team === 'blue' || h.team === 'red'));
         app.counters = Object.assign(app.counters, data.counters);
@@ -803,6 +1081,7 @@ if (typeof document !== 'undefined') {
       $('btn-quit').addEventListener('click', () => {
         if (window.confirm('Abandonner le match en cours ?')) backToSetup();
       });
+      $('btn-share-logs').addEventListener('click', shareLogs);
 
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState !== 'visible' || app.screen === 'setup') return;
@@ -810,7 +1089,9 @@ if (typeof document !== 'undefined') {
         if (Voice.wanted) Voice.start();
       });
 
-      if (restore()) {
+      const restored = restore();
+      updateShareButton();
+      if (restored) {
         const overlay = $('resume-overlay');
         overlay.hidden = false;
         overlay.addEventListener('click', () => {
