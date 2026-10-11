@@ -336,13 +336,62 @@ function displayPoints(state) {
  * @param {Team} first
  * @returns {string}
  */
-function formatSet(set, first) {
+function formatSet(set, first = 'blue') {
   const second = OTHER[first];
   let txt = set[first] + '-' + set[second];
   if (set.tiebreak) txt += ' (' + set.tiebreak[first] + '-' + set.tiebreak[second] + ')';
   return txt;
 }
 
+/** @param {LogEntry[]} logs */
+function formatLog(logs) {
+  return logs
+      .map((log, i) => {
+        const date = new Date(log.t).toLocaleTimeString('fr-FR');
+        const gap = i === 0 ? '' : '+' + Math.round((log.t - logs[i - 1].t)/1000) + 's';
+        return [date, gap, log.src, log.result, log.text].join('\t | \t');
+      })
+      .join('\n');
+}
+
+/** @param {State} state */
+function formatScore(state) {
+  const gameParts = state.completedSets.map(s => formatSet(s, 'blue'));
+  if (state.winner === null) {
+    gameParts.push(`${state.games.blue}-${state.games.red}`);
+  }
+  return gameParts.join(', ') + (state.winner !== null ? ' (terminé)' : ' (abandonné)');
+}
+
+/**
+ * @param {Archive[]} archives
+ * @param {LogEntry[]} currentLog
+ */
+function formatAllLogs(archives, currentLog) {
+
+  const logFile = [];
+
+  const header = [
+    'Journal App',
+    archives.length + ' match(s)',
+    'envoyé le ' + new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
+  ].join(' - ');
+  logFile.push(header);
+
+  for (const match of archives) {
+    const blueTeam = match.names.blue || 'Bleu';
+    const redTeam = match.names.red || 'Rouge';
+    const date = new Date(match.log[0].t).toLocaleDateString('fr-FR');
+    const score = formatScore(match.state);
+    const matchTitle = `=== ${blueTeam} vs ${redTeam} - ${date} - ${score} - ${match.log.length} entrées ===`;
+    logFile.push(matchTitle + '\n' + formatLog(match.log));
+  }
+
+  // ── 4. L'ASSEMBLAGE ──────────────────────────────────────────────────────
+  // On colle tous les morceaux de la liste, avec une ligne vide entre chaque
+  // (deux retours à la ligne), et on renvoie le texte obtenu.
+  return logFile.join('\n\n');
+}
 /* ---------- Reconnaissance des commandes vocales ---------- */
 
 /**
@@ -390,7 +439,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     initialState, applyPoint, replay, numberFr, gamePointsPhrase, tiebreakPhrase,
     gamesPhrase, setsPhrase, announceEvent, undoPhrase, displayPoints, formatSet,
-    normalize, detectCommand,
+    normalize, detectCommand, formatLog,
   };
 }
 
@@ -420,7 +469,7 @@ if (typeof document !== 'undefined') {
       /** @type {LogEntry[]} */
       log: [],
       /** @type {Archive[]} */
-      archives: []
+      archives: [],
     };window.app = app;
 
     /* ---------- Son de confirmation ---------- */
@@ -878,13 +927,13 @@ if (typeof document !== 'undefined') {
 
     function backToSetup() {
       if (app.log.length > 0) {
-        console.log('archive', app.log.length);
         const archive = {
           names: app.names,
           state: app.state,
           log: app.log,
         };
         app.archives.push(archive);
+        app.log = [];
         if (app.archives.length > ARCHIVES_MAX) app.archives.shift();
       }
       Voice.stop();
@@ -894,7 +943,48 @@ if (typeof document !== 'undefined') {
       $('name-blue').value = app.names.blue;
       $('name-red').value = app.names.red;
       showScreen('setup');
+      updateShareButton();
       save();
+    }
+
+    function updateShareButton() {
+      const button = $('btn-share-logs');
+      button.hidden = (app.archives.length === 0);
+    }
+
+    function flashButton(message) {
+      const button = $('btn-share-logs');
+      button.textContent = message;
+      setTimeout(() => button.textContent = 'Envoyer les Logs', 1000);
+    }
+
+    async function shareLogs() {
+
+      const allLogs = formatAllLogs(app.archives);
+
+      // 2. Le nom du fichier, avec la date et l'heure d'envoi : journal-padel_11-10-2026_18h42.txt
+      const now = new Date();
+      const day = now.toLocaleDateString('fr-FR').replaceAll('/', '-');
+      const time = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }).replace(':', 'h');
+      const fileName = `journal-score${day}_${time}.txt`;
+      const file = new File(
+          [allLogs],
+          fileName,
+          { type: "text/plain" }
+      );
+
+      const shareData = { files: [file], title: 'Journal Score' };
+      const canShareFile = navigator.canShare && navigator.canShare(shareData);
+
+      try {
+        if (canShareFile){
+          await navigator.share(shareData)
+        }
+         await navigator.clipboard.writeText(allLogs)
+        flashButton('Copié ✓');
+      } catch (e) {
+        if (e.name === 'AbortError') return flashButton('Envoi impossible');
+      }
     }
 
     /* ---------- Sauvegarde locale (survit à un rechargement) ---------- */
@@ -988,6 +1078,7 @@ if (typeof document !== 'undefined') {
       $('btn-quit').addEventListener('click', () => {
         if (window.confirm('Abandonner le match en cours ?')) backToSetup();
       });
+      $('btn-share-logs').addEventListener('click', shareLogs);
 
       document.addEventListener('visibilitychange', () => {
         if (document.visibilityState !== 'visible' || app.screen === 'setup') return;
@@ -995,7 +1086,9 @@ if (typeof document !== 'undefined') {
         if (Voice.wanted) Voice.start();
       });
 
-      if (restore()) {
+      const restored = restore();
+      updateShareButton();
+      if (restored) {
         const overlay = $('resume-overlay');
         overlay.hidden = false;
         overlay.addEventListener('click', () => {
