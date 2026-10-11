@@ -10,6 +10,7 @@ index.html      3 écrans : configuration → jeu → fin de match
 style.css       design fort contraste, score très grand
 app.js          moteur de score + reconnaissance/synthèse vocale + interface
 tests/          tests unitaires du moteur (node --test)
+e2e/            tests d'intégration (Playwright)
 manifest.json   manifest PWA (ajout à l'écran d'accueil, mode standalone)
 icons/          icônes 192 et 512 px
 ```
@@ -112,6 +113,18 @@ node --test
 
 Les fichiers sont dans `tests/`. Ils testent les fonctions de la partie 1 de `app.js`, exportées
 par `module.exports`.
+
+Tests d'intégration (la vraie page dans Chromium, pilotée par Playwright) : dans `e2e/`.
+
+```bash
+npm install                          # une seule fois : installe Playwright (outil de test uniquement)
+npx playwright install chromium      # une seule fois : télécharge le navigateur de test
+npm run test:e2e
+```
+
+Les deux séries de tests tournent automatiquement sur GitHub (onglet **Actions**) à chaque pull
+request et à chaque push sur `main` (`.github/workflows/tests.yml`). L'application elle-même reste
+sans dépendance : `package.json` ne sert qu'aux tests.
 
 ## Déploiement sur GitHub Pages
 
