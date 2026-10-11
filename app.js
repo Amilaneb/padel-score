@@ -349,7 +349,7 @@ function formatLog(logs) {
       .map((log, i) => {
         const date = new Date(log.t).toLocaleTimeString('fr-FR');
         const gap = i === 0 ? '' : '+' + Math.round((log.t - logs[i - 1].t)/1000) + 's';
-        return [date, gap, log.src, log.result, log.text].join('\t | \t');
+        return [date, gap, log.src, log.result, log.text].join('\t');
       })
       .join('\n');
 }
@@ -439,7 +439,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     initialState, applyPoint, replay, numberFr, gamePointsPhrase, tiebreakPhrase,
     gamesPhrase, setsPhrase, announceEvent, undoPhrase, displayPoints, formatSet,
-    normalize, detectCommand, formatLog,
+    normalize, detectCommand, formatLog,formatScore, formatAllLogs
   };
 }
 
@@ -470,7 +470,7 @@ if (typeof document !== 'undefined') {
       log: [],
       /** @type {Archive[]} */
       archives: [],
-    };window.app = app;
+    };
 
     /* ---------- Son de confirmation ---------- */
 
@@ -876,7 +876,7 @@ if (typeof document !== 'undefined') {
 
     function handleCommand(cmd, source) {
       if (app.screen === 'setup') return;
-      if (source === 'touch') addLog('touch', ' ', cmd);
+      if (source === 'touch') addLog('touch', '', cmd);
       if (cmd === 'undo') undo(source);
       else scorePoint(cmd, source);
     }
@@ -966,7 +966,7 @@ if (typeof document !== 'undefined') {
       const now = new Date();
       const day = now.toLocaleDateString('fr-FR').replaceAll('/', '-');
       const time = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }).replace(':', 'h');
-      const fileName = `journal-score${day}_${time}.txt`;
+      const fileName = `journal-score_${day}_${time}.txt`;
       const file = new File(
           [allLogs],
           fileName,
@@ -979,11 +979,13 @@ if (typeof document !== 'undefined') {
       try {
         if (canShareFile){
           await navigator.share(shareData)
+        } else {
+          await navigator.clipboard.writeText(allLogs)
+          flashButton('Copié ✓');
         }
-         await navigator.clipboard.writeText(allLogs)
-        flashButton('Copié ✓');
       } catch (e) {
-        if (e.name === 'AbortError') return flashButton('Envoi impossible');
+        if (e.name === 'AbortError') return;
+        flashButton('Envoi impossible');
       }
     }
 
