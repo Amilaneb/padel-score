@@ -384,7 +384,7 @@ function formatAllLogs(archives) {
     const redTeam = match.names.red || 'Rouge';
     const date = new Date(match.log[0].t).toLocaleDateString('fr-FR');
     const score = formatScore(match.state);
-    const matchTitle = `=== ${blueTeam} vs ${redTeam} - ${date} - ${score} - ${match.log.length} entrées ===`;
+    const matchTitle = `### ${blueTeam} vs ${redTeam} - ${date} - ${score} - ${match.log.length} entrées ###`;
     logFile.push(matchTitle + '\n' + formatLog(match.log));
   }
 
