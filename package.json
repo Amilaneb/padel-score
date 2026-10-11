@@ -1,0 +1,12 @@
+{
+  "name": "padel-score",
+  "private": true,
+  "description": "Tests de l'application Score Padel (l'application elle-même n'a aucune dépendance).",
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:e2e": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.56.1"
+  }
+}
