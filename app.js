@@ -56,9 +56,10 @@ const TIEBREAK_POINTS = 7;
  * Une ligne du journal.
  * @typedef {Object} LogEntry
  * @property {number} t          heure, en millisecondes (Date.now())
- * @property {'voice'|'touch'} src
- * @property {string} text       ce qui a été entendu ('' pour un toucher)
- * @property {string} result     'blue' | 'red' | 'undo' | 'unknown' | 'ignored'
+ * @property {'voice'|'touch'|'mic'|'app'} src
+ * @property {string} text       ce qui a été entendu ('' pour un toucher ; mode du micro pour 'mic')
+ * @property {string} result     voice/touch : 'blue' | 'red' | 'undo' | 'unknown' | 'ignored'
+ *                               mic : 'start' | 'end' | 'error:<code>'   app : 'hidden' | 'visible'
  */
 
 /**
@@ -393,6 +394,16 @@ function formatAllLogs(archives) {
   // (deux retours à la ligne), et on renvoie le texte obtenu.
   return logFile.join('\n\n');
 }
+/**
+ * Un match mérite d'être archivé s'il y a eu au moins un point marqué
+ * (évite de remplir les archives avec des faux départs).
+ * @param {LogEntry[]} log
+ * @returns {boolean}
+ */
+function isWorthArchiving(log) {
+  return log.some((entry) => entry.result === 'blue' || entry.result === 'red');
+}
+
 /* ---------- Reconnaissance des commandes vocales ---------- */
 
 /**
@@ -411,9 +422,12 @@ function normalize(text) {
 
 const COMMAND_PATTERNS = [
   { cmd: 'blue', re: /\b(point|points|poing|poings) bleu/ },
-  { cmd: 'red', re: /\b(point|points|poing|poings) rouge/ },
+  { cmd: 'red', re: /\b(point|points|poing|poings|croix) rouge/ },   // "Croix-Rouge" : entendu au lieu de "point rouge"
   { cmd: 'undo', re: /\bannule/ },
 ];
+
+/** Au-delà, la phrase est une conversation (ex. quelqu'un qui explique "il faut dire point bleu") : ignorée. */
+const MAX_COMMAND_WORDS = 6;
 
 /**
  * Retourne 'blue' | 'red' | 'undo' | null (première commande trouvée dans le texte).
@@ -422,6 +436,7 @@ const COMMAND_PATTERNS = [
  */
 function detectCommand(text) {
   const n = normalize(text);
+  if (n.split(' ').length > MAX_COMMAND_WORDS) return null;
   // Écho de notre propre annonce "point annulé, retour à ..." : à ignorer.
   if (/\bretour a\b/.test(n)) return null;
   let best = null;
@@ -440,7 +455,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     initialState, applyPoint, replay, numberFr, gamePointsPhrase, tiebreakPhrase,
     gamesPhrase, setsPhrase, announceEvent, undoPhrase, displayPoints, formatSet,
-    normalize, detectCommand, formatLog,formatScore, formatAllLogs
+    normalize, detectCommand, formatLog, formatScore, formatAllLogs, isWorthArchiving,
   };
 }
 
@@ -636,6 +651,7 @@ if (typeof document !== 'undefined') {
         rec.onstart = () => {
           this.startedAt = Date.now();
           setMicStatus('listening');
+          addLog('mic', this.mode, 'start');
         };
 
         rec.onresult = (e) => {
@@ -663,6 +679,7 @@ if (typeof document !== 'undefined') {
         };
 
         rec.onerror = (e) => {
+          if (this.wanted) addLog('mic', e.message || '', 'error:' + e.error);
           // Échec du mode « sur l'appareil » : on revient au service en ligne sans bloquer le vocal.
           if (this.mode === 'local'
             && (e.error === 'language-not-supported' || e.error === 'service-not-allowed')) {
@@ -683,6 +700,7 @@ if (typeof document !== 'undefined') {
             if (!this.blocked) setMicStatus('off');
             return;
           }
+          addLog('mic', this.mode, 'end');
           // Session coupée par le navigateur : on relance automatiquement.
           const shortLived = Date.now() - this.startedAt < 1500;
           this.quickFails = shortLived ? this.quickFails + 1 : 0;
@@ -927,16 +945,16 @@ if (typeof document !== 'undefined') {
     }
 
     function backToSetup() {
-      if (app.log.length > 0) {
+      if (isWorthArchiving(app.log)) {
         const archive = {
           names: app.names,
           state: app.state,
           log: app.log,
         };
         app.archives.push(archive);
-        app.log = [];
         if (app.archives.length > ARCHIVES_MAX) app.archives.shift();
       }
+      app.log = [];
       Voice.stop();
       Speaker.supported && window.speechSynthesis.cancel();
       app.history = [];
@@ -1006,7 +1024,7 @@ if (typeof document !== 'undefined') {
     }
 
     /**
-     * @param {'voice'|'touch'} src
+     * @param {'voice'|'touch'|'mic'|'app'} src
      * @param {string} text
      * @param {string} result
      */
@@ -1084,7 +1102,10 @@ if (typeof document !== 'undefined') {
       $('btn-share-logs').addEventListener('click', shareLogs);
 
       document.addEventListener('visibilitychange', () => {
-        if (document.visibilityState !== 'visible' || app.screen === 'setup') return;
+        if (app.screen === 'setup') return;
+        // Écran verrouillé / appli en arrière-plan : utile pour expliquer une coupure du micro
+        addLog('app', '', document.visibilityState);
+        if (document.visibilityState !== 'visible') return;
         ScreenLock.request();
         if (Voice.wanted) Voice.start();
       });

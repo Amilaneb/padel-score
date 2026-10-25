@@ -37,3 +37,19 @@ test('detectCommand : la première commande prononcée l\'emporte', () => {
   assert.equal(detectCommand('point rouge non point bleu'), 'red');
   assert.equal(detectCommand('point bleu annule'), 'blue');
 });
+
+test('detectCommand : "Croix-Rouge", souvent entendu au lieu de "point rouge"', () => {
+  assert.equal(detectCommand('Croix-Rouge'), 'red');
+});
+
+test('detectCommand : une phrase longue est une conversation, même si elle contient une commande', () => {
+  // Phrase réelle du journal du 22/10, qui avait compté un point bleu par erreur
+  const explanation = 'minutes de retard je vais la mettre proche du de la vitre au proche du joueur '
+    + 'qui est là et en fait il faut annoncer par exemple. bleu tu vois. bleu point bleu';
+  assert.equal(detectCommand(explanation), null);
+});
+
+test('detectCommand : jusqu\'à 6 mots, la commande est acceptée', () => {
+  assert.equal(detectCommand('allez allez allez un point bleu'), 'blue');      // 6 mots
+  assert.equal(detectCommand('allez allez allez allez un point bleu'), null);  // 7 mots
+});

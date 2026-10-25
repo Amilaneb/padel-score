@@ -4,7 +4,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { replay, formatScore, formatLog, formatAllLogs } = require('../app.js');
+const { replay, formatScore, formatLog, formatAllLogs, isWorthArchiving } = require('../app.js');
 
 const games = (team, n) => Array(4 * n).fill(team);
 const T0 = new Date(2026, 9, 10, 14, 2, 11).getTime();   // 10/10/2026 14:02:11, heure locale
@@ -78,4 +78,12 @@ test('formatAllLogs : aucune cellule ne commence par "=" (pris pour une formule 
       assert.ok(!cell.startsWith('='), `cellule qui commence par "=" : ${cell}`);
     }
   }
+});
+
+test('isWorthArchiving : seulement si au moins un point a été marqué', () => {
+  assert.equal(isWorthArchiving([]), false);
+  assert.equal(isWorthArchiving([entry(0, 'touch', 'undo'), entry(2, 'voice', 'unknown', 'début du match')]), false);
+  assert.equal(isWorthArchiving([entry(0, 'mic', 'error:network')]), false);
+  assert.equal(isWorthArchiving([entry(0, 'voice', 'red', 'point rouge')]), true);
+  assert.equal(isWorthArchiving([entry(0, 'touch', 'blue'), entry(1, 'touch', 'undo')]), true);
 });
