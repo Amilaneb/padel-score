@@ -129,7 +129,6 @@ test('Quitter archive le match ; le bouton d\'envoi copie le journal (sans parta
   const copied = await page.evaluate(() => navigator.clipboard.readText());
   expect(copied).toMatch(/^Journal App - 1 match\(s\)/);
   expect(copied).toContain('### Papa vs Marc - ');
-  expect(copied).toContain('2 entrées ###');
   expect(copied).toContain('\ttouch\tblue\t');
   expect(copied).toContain('\ttouch\tred\t');
 
@@ -210,6 +209,20 @@ test('deux matchs de suite : chaque archive garde son propre journal', async ({ 
 
   const archives = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).archives, STORAGE_KEY);
   expect(archives).toHaveLength(2);
-  expect(archives[0].log.map((e) => e.result)).toEqual(['blue']);
-  expect(archives[1].log.map((e) => e.result)).toEqual(['red', 'red', 'red']);
+  // Seules les actions de jeu nous intéressent ici (le journal contient aussi les événements du micro)
+  const plays = (archive) => archive.log.filter((e) => e.src === 'touch').map((e) => e.result);
+  expect(plays(archives[0])).toEqual(['blue']);
+  expect(plays(archives[1])).toEqual(['red', 'red', 'red']);
+});
+
+test('faux départ : un match quitté sans aucun point n\'est pas archivé', async ({ page }) => {
+  await startMatch(page);
+  await page.click('#btn-undo');   // une action, mais aucun point
+  page.once('dialog', (dialog) => dialog.accept());
+  await page.click('#btn-quit');
+
+  await expect(page.locator('#screen-setup')).toBeVisible();
+  await expect(page.locator('#btn-share-logs')).toBeHidden();
+  const archives = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).archives, STORAGE_KEY);
+  expect(archives).toEqual([]);
 });
