@@ -1,7 +1,7 @@
 # Score Padel — PWA de suivi de score
 
 Application web (PWA) pour suivre le score d'un match de padel amateur en temps réel, **à la voix**
-(« point bleu », « point rouge », « annule ») avec des **zones tactiles** en secours.
+(« bleu », « rouge », « annule ») avec des **zones tactiles** en secours.
 
 HTML / CSS / JavaScript vanilla : aucun framework, aucune dépendance, aucun build, aucun backend.
 
@@ -19,7 +19,7 @@ icons/          icônes 192 et 512 px
 
 1. Saisir les noms des équipes bleue et rouge, puis **Démarrer le match** (autoriser le micro).
 2. Pendant le match, dire :
-   - **« point bleu »** / **« point rouge »** : point pour l'équipe ;
+   - **« bleu »** / **« rouge »** : point pour l'équipe (« point bleu » marche aussi) ;
    - **« annule »** : retire le dernier point (à répéter pour remonter plus loin, y compris à travers
      une fin de jeu, de set ou de match).
 3. Chaque commande reconnue déclenche un bip, puis l'annonce du score en toutes lettres.
@@ -60,6 +60,10 @@ ambiguïté puisque l'application ne suit pas le service.
 - **Anti-écho** : le micro ignore ce qu'il entend pendant l'annonce et 0,8 s après, pour que
   l'application ne réagisse pas à sa propre voix (« point annulé… ») ni à deux joueurs qui annoncent
   le même point en même temps. Pour enchaîner plusieurs « annule », attendre la fin de chaque annonce.
+  Par sécurité, une phrase contenant un mot des annonces (« jeu », « avantage », « set », « match »,
+  « équipe ») n'est jamais prise pour une commande, même si elle contient « bleu » ou « rouge ».
+- **Phrases courtes uniquement** : une phrase de plus de 3 mots est ignorée (conversation entre
+  joueurs, pas une commande).
 - **Reconnaissance sur le téléphone** : si Chrome sait reconnaître le français directement sur
   l'appareil (API `processLocally`, Chrome récent), l'application l'utilise ; si le pack de langue est
   téléchargeable, il est téléchargé au démarrage du match. Sinon, ou en cas d'erreur, elle utilise
