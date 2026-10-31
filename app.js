@@ -421,13 +421,13 @@ function normalize(text) {
 }
 
 const COMMAND_PATTERNS = [
-  { cmd: 'blue', re: /\b(point|points|poing|poings) bleu/ },
-  { cmd: 'red', re: /\b(point|points|poing|poings|croix) rouge/ },   // "Croix-Rouge" : entendu au lieu de "point rouge"
+  { cmd: 'blue', re: /\bbleu/ },
+  { cmd: 'red', re: /\brouge/ },
   { cmd: 'undo', re: /\bannule/ },
 ];
 
 /** Au-delà, la phrase est une conversation (ex. quelqu'un qui explique "il faut dire point bleu") : ignorée. */
-const MAX_COMMAND_WORDS = 6;
+const MAX_COMMAND_WORDS = 3;
 
 /**
  * Retourne 'blue' | 'red' | 'undo' | null (première commande trouvée dans le texte).
@@ -439,6 +439,8 @@ function detectCommand(text) {
   if (n.split(' ').length > MAX_COMMAND_WORDS) return null;
   // Écho de notre propre annonce "point annulé, retour à ..." : à ignorer.
   if (/\bretour a\b/.test(n)) return null;
+  // Écho de nos annonces contenant une couleur ("jeu bleu", "avantage rouge", "équipe bleue"...) : à ignorer.
+  if (/\b(jeu|jeux|avantage|set|sets|match|equipe)\b/.test(n)) return null;
   let best = null;
   let bestIndex = Infinity;
   for (const { cmd, re } of COMMAND_PATTERNS) {
