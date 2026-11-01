@@ -585,6 +585,7 @@ if (typeof document !== 'undefined') {
       startedAt: 0,
       quickFails: 0,
       restartTimer: null,
+      handled: new Set(),   // numéros des résultats déjà transformés en commande (session en cours)
       // Reconnaissance sur l'appareil (Chrome récent) : 'local' si active, sinon 'cloud'.
       mode: 'cloud',
       // available | downloadable | downloading | unavailable | unsupported | unknown
@@ -647,33 +648,57 @@ if (typeof document !== 'undefined') {
         const rec = new this.SR();
         rec.lang = LANG;
         rec.continuous = true;
-        rec.interimResults = false;
+        // Résultats provisoires : on réagit dès que « bleu » est entendu, sans attendre la fin de la phrase.
+        rec.interimResults = true;
         rec.maxAlternatives = 3;
 
         rec.onstart = () => {
           this.startedAt = Date.now();
+          this.handled.clear();   // les numéros de résultats repartent de 0 à chaque session d'écoute
           setMicStatus('listening');
           addLog('mic', this.mode, 'start');
+        };
+
+        /** Première commande trouvée parmi les interprétations du micro. */
+        const detectAny = (transcripts) => {
+          for (const t of transcripts) {
+            const cmd = detectCommand(t);
+            if (cmd) return cmd;
+          }
+          return null;
         };
 
         rec.onresult = (e) => {
           for (let i = e.resultIndex; i < e.results.length; i++) {
             const result = e.results[i];
-            if (!result.isFinal) continue;
+            // Commande déjà prise sur une version provisoire de cette phrase : on ne la compte pas deux fois.
+            if (this.handled.has(i)) continue;
             const transcripts = Array.from(result, (alt) => alt.transcript);
             const transcript = transcripts[0];
             const heard = transcripts.join(' / ');
+
+            if (!result.isFinal) {
+              // Phrase pas encore finie : on agit tout de suite si elle contient déjà une commande.
+              if (Speaker.busy()) continue;
+              const cmd = detectAny(transcripts);
+              if (!cmd) {
+                showHeard(transcript, '…');   // montre aux joueurs que l'appli les entend
+                continue;
+              }
+              this.handled.add(i);
+              addLog('voice', heard + ' [provisoire]', cmd);
+              showHeard(transcript, null);
+              handleCommand(cmd, 'voice');
+              continue;
+            }
+
             if (Speaker.busy()) {
               addLog('voice', heard, 'ignored');
               showHeard(transcript, 'ignoré pendant l\'annonce');
               continue;
             }
 
-            let cmd = null;
-            for (const t of transcripts) {
-              cmd = detectCommand(t);
-              if (cmd) break;
-            }
+            const cmd = detectAny(transcripts);
             addLog('voice', heard, cmd || 'unknown');
             showHeard(transcript, cmd ? null : 'non reconnu');
             if (cmd) handleCommand(cmd, 'voice');
@@ -1061,6 +1086,9 @@ if (typeof document !== 'undefined') {
     /* ---------- Initialisation ---------- */
 
     function init() {
+      // Copie de l'appli gardée sur le téléphone : lancement possible sans réseau (voir sw.js).
+      if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
+
       Speaker.init();
       Voice.init();
 

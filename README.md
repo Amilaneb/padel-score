@@ -12,6 +12,7 @@ app.js          moteur de score + reconnaissance/synthèse vocale + interface
 tests/          tests unitaires du moteur (node --test)
 e2e/            tests d'intégration (Playwright)
 manifest.json   manifest PWA (ajout à l'écran d'accueil, mode standalone)
+sw.js           service worker : lancement sans réseau
 icons/          icônes 192 et 512 px
 ```
 
@@ -143,6 +144,9 @@ Aucune étape de build : les fichiers de la racine sont servis tels quels, en HT
 Sur le téléphone (Chrome Android) : ouvrir l'URL, autoriser le micro, puis menu ⋮ →
 **Ajouter à l'écran d'accueil** / **Installer l'application**.
 
-> Note : selon le téléphone, la reconnaissance vocale de Chrome peut passer par un service en ligne et nécessiter
-> une connexion réseau. Il n'y a pas de service worker : l'application n'est pas utilisable hors
-> ligne (volontaire pour ce MVP, afin d'éviter les problèmes de cache lors des mises à jour).
+> Note : un service worker (`sw.js`) garde une copie de l'application sur le téléphone : après une
+> première ouverture avec réseau, elle se lance aussi sans connexion. Il fonctionne en « réseau
+> d'abord » : avec du réseau, c'est toujours la dernière version publiée qui est chargée (pas de
+> problème de mise à jour) ; sans réseau, ou si le réseau met plus de 3 s à répondre, c'est la copie.
+> Selon le téléphone, la reconnaissance vocale de Chrome peut passer par un service en ligne
+> (« Vocal : en ligne ») et nécessiter une connexion pendant le match.
