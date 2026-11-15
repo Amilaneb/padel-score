@@ -488,6 +488,43 @@ function detectInNewWords(text, from) {
 /** Délai pendant lequel un nouveau résultat peut encore être la suite de la phrase précédente. */
 const PHRASE_CONTINUATION_MS = 1500;
 
+/* ---------- Anti-écho : quand le micro doit-il ignorer ce qu'il entend ? ---------- */
+
+const ECHO_GUARD_MS = 800;     // marge après la fin d'une annonce (écho dans la pièce)
+const SPEECH_MAX_MS = 6000;    // durée max supposée d'une annonce (filet si la fin n'est jamais signalée)
+
+/**
+ * Anti-écho, côté temps : le micro est « sourd » dès qu'une commande est acceptée, pendant toute
+ * l'annonce qui suit, puis ECHO_GUARD_MS après sa fin. Une annonce remplacée par une autre ne
+ * rouvre pas le micro (jeton). L'heure est toujours passée en paramètre.
+ * Côté texte, les échos qui passent malgré tout sont reconnus par isAnnouncementEcho.
+ */
+function createEchoGuard() {
+  let deafUntil = 0;
+  let token = 0;
+  return {
+    /** Commande acceptée : sourd jusqu'à la fin de l'annonce qui va suivre. */
+    hold(now) {
+      token += 1;
+      deafUntil = now + SPEECH_MAX_MS;
+    },
+    /** Une annonce commence. Renvoie le jeton à rendre à sa fin. */
+    speechStarted(now) {
+      token += 1;
+      deafUntil = now + SPEECH_MAX_MS;
+      return token;
+    },
+    /** L'annonce `speechToken` est finie : le micro rouvre après la marge, sauf si une autre a pris sa place. */
+    speechEnded(speechToken, now) {
+      if (speechToken === token) deafUntil = now + ECHO_GUARD_MS;
+    },
+    /** Le micro doit-il ignorer ce qu'il entend en ce moment ? */
+    muted(now) {
+      return now < deafUntil;
+    },
+  };
+}
+
 /**
  * Ce que l'écoute de phrase décide pour un résultat du micro.
  * @typedef {Object} HearDecision
@@ -562,8 +599,8 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     initialState, applyPoint, replay, numberFr, gamePointsPhrase, tiebreakPhrase,
     gamesPhrase, setsPhrase, announceEvent, undoPhrase, displayPoints, formatSet,
-    normalize, detectCommand, detectInNewWords, createPhraseListener,
-    MAX_PHRASE_WORDS, PHRASE_CONTINUATION_MS,
+    normalize, detectCommand, detectInNewWords, createPhraseListener, createEchoGuard,
+    MAX_PHRASE_WORDS, PHRASE_CONTINUATION_MS, ECHO_GUARD_MS, SPEECH_MAX_MS,
     formatLog, formatScore, formatAllLogs, isWorthArchiving,
   };
 }
@@ -575,10 +612,8 @@ if (typeof module !== 'undefined' && module.exports) {
 if (typeof document !== 'undefined') {
   (function () {
     const STORAGE_KEY = 'padel-score-v1';
-    const ECHO_GUARD_MS = 800;   // ignorer le micro juste après une annonce (anti-écho)
     const TAP_DEBOUNCE_MS = 350; // anti double-tap accidentel
     const ANNOUNCE_DELAY_MS = 180; // le bip passe avant l'annonce
-    const SPEECH_MAX_MS = 6000;    // durée max supposée d'une annonce
     const LANG = 'fr-FR';
     const LOG_MAX = 1999;
     const ARCHIVES_MAX = 10;
@@ -636,12 +671,12 @@ if (typeof document !== 'undefined') {
 
     /* ---------- Synthèse vocale ---------- */
 
+    const echo = createEchoGuard();
+
     const Speaker = {
       supported: 'speechSynthesis' in window,
       voice: null,
       utterance: null,  // référence gardée : évite que Chrome perde l'événement onend
-      busyUntil: 0,     // micro ignoré jusqu'à cet instant (anti-écho / anti-doublon)
-      token: 0,
       init() {
         if (!this.supported) return;
         const pick = () => {
@@ -653,16 +688,9 @@ if (typeof document !== 'undefined') {
         pick();
         window.speechSynthesis.addEventListener('voiceschanged', pick);
       },
-      /** Bloque le micro dès qu'une commande est acceptée, avant même l'annonce. */
-      hold() {
-        this.token += 1;
-        this.busyUntil = Date.now() + SPEECH_MAX_MS;
-      },
       say(text) {
-        const token = ++this.token;
-        const done = () => {
-          if (token === this.token) this.busyUntil = Date.now() + ECHO_GUARD_MS;
-        };
+        const token = echo.speechStarted(Date.now());
+        const done = () => echo.speechEnded(token, Date.now());
         if (!this.supported || !text) { done(); return; }
         const synth = window.speechSynthesis;
         synth.cancel();
@@ -673,12 +701,7 @@ if (typeof document !== 'undefined') {
         u.onend = done;
         u.onerror = done;
         this.utterance = u;
-        // Filet de sécurité si onend ne se déclenche jamais.
-        this.busyUntil = Date.now() + SPEECH_MAX_MS;
         synth.speak(u);
-      },
-      busy() {
-        return Date.now() < this.busyUntil;
       },
     };
 
@@ -775,7 +798,7 @@ if (typeof document !== 'undefined') {
             const transcripts = Array.from(result, (alt) => alt.transcript);
             const heard = transcripts.join(' / ');
             const decision = this.listener.hear({
-              transcripts, isFinal: result.isFinal, muted: Speaker.busy(), now: Date.now(),
+              transcripts, isFinal: result.isFinal, muted: echo.muted(Date.now()), now: Date.now(),
             });
             switch (decision.type) {
               case 'command':
@@ -1032,7 +1055,7 @@ if (typeof document !== 'undefined') {
     }
 
     function announce(text, kind) {
-      Speaker.hold();
+      echo.hold(Date.now());   // micro sourd dès maintenant, avant même le bip
       Beep.play(kind);
       setTimeout(() => Speaker.say(text), ANNOUNCE_DELAY_MS);
     }
