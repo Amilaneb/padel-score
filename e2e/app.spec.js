@@ -101,7 +101,7 @@ test('Quitter archive le match ; le bouton d\'envoi copie le journal (sans parta
   await expect(button).toHaveText('Envoyer les Logs');   // le texte revient tout seul
 
   const copied = await page.evaluate(() => navigator.clipboard.readText());
-  expect(copied).toMatch(/^Journal App - 1 match\(s\)/);
+  expect(copied).toMatch(/^Journal Score - 1 match\(s\)/);
   expect(copied).toContain('### Papa vs Marc - ');
   expect(copied).toContain('\ttouch\tblue\t');
   expect(copied).toContain('\ttouch\tred\t');

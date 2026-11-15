@@ -5,7 +5,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
-  normalize, detectCommand, detectInNewWords, initialState, applyPoint, announceEvent,
+  normalize, isAnnouncementEcho, detectCommand, detectInNewWords, initialState, applyPoint, announceEvent,
 } = require('../app.js');
 const { games } = require('./helpers');
 
@@ -102,4 +102,11 @@ test('detectInNewWords : écho d\'annonce reconnu même si le début a déjà é
   // « jeu » entendu pendant l'annonce (déjà traité), « bleu » arrive juste après : c'est l'écho
   assert.equal(detectInNewWords('jeu bleu', 1).cmd, null);
   assert.equal(detectInNewWords('match gagné équipe bleue', 0).cmd, null);
+});
+
+test('isAnnouncementEcho : vocabulaire des annonces de l\'appli', () => {
+  assert.equal(isAnnouncementEcho('jeu bleu quatre jeux a trois'), true);
+  assert.equal(isAnnouncementEcho('point annule retour a trente'), true);
+  assert.equal(isAnnouncementEcho('allez bleu'), false);
+  assert.equal(isAnnouncementEcho('jeudi bleu'), false);   // mot entier seulement
 });

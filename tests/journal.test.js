@@ -53,7 +53,7 @@ test('formatLog : une ligne par entrée, colonnes séparées par des tabulations
 
 test('formatAllLogs : sans archive, seulement l\'en-tête', () => {
   const text = formatAllLogs([]);
-  assert.match(text, /^Journal App - 0 match\(s\) - envoyé le \d\d\/\d\d\/\d{4} \d\d:\d\d$/);
+  assert.match(text, /^Journal Score - 0 match\(s\) - envoyé le \d\d\/\d\d\/\d{4} \d\d:\d\d$/);
 });
 
 test('formatAllLogs : un titre par match, noms par défaut si vides', () => {
@@ -64,7 +64,7 @@ test('formatAllLogs : un titre par match, noms par défaut si vides', () => {
   const blocks = formatAllLogs(archives).split('\n\n');
 
   assert.equal(blocks.length, 3);
-  assert.match(blocks[0], /^Journal App - 2 match\(s\)/);
+  assert.match(blocks[0], /^Journal Score - 2 match\(s\)/);
   assert.equal(blocks[1].split('\n')[0], '### Papa vs Marc - 10/10/2026 - 1-0 (abandonné) - 1 entrées ###');
   assert.equal(blocks[2].split('\n')[0], '### Bleu vs Rouge - 10/10/2026 - 0-0 (abandonné) - 2 entrées ###');
   assert.equal(blocks[2].split('\n').length, 3);   // titre + 2 lignes
@@ -83,7 +83,7 @@ test('formatAllLogs : aucune cellule ne commence par "=" (pris pour une formule 
 
 test('formatAllLogs : en-tête exact avec la date d\'envoi', () => {
   const sentAt = new Date(2026, 10, 15, 9, 5);   // 15/11/2026 09:05, heure locale
-  assert.equal(formatAllLogs([], sentAt), 'Journal App - 0 match(s) - envoyé le 15/11/2026 09:05');
+  assert.equal(formatAllLogs([], sentAt), 'Journal Score - 0 match(s) - envoyé le 15/11/2026 09:05');
 });
 
 test('exportFileName : daté, sans « / » ni « : »', () => {

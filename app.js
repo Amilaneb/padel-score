@@ -355,6 +355,8 @@ function formatSet(set, first = 'blue') {
 
 /* ---------- Journal : export texte ---------- */
 
+const JOURNAL_TITLE = 'Journal Score';   // en-tête du fichier envoyé et titre du partage
+
 /**
  * Lignes du journal d'un match, colonnes séparées par des tabulations (se colle dans un tableur) :
  * heure, écart avec la ligne précédente, source, résultat, texte entendu.
@@ -394,7 +396,7 @@ function formatAllLogs(archives, now = new Date()) {
   const sentAt = now.toLocaleString(LANG, {
     day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
   });
-  const blocks = [`Journal App - ${archives.length} match(s) - envoyé le ${sentAt}`];
+  const blocks = [`${JOURNAL_TITLE} - ${archives.length} match(s) - envoyé le ${sentAt}`];
   for (const match of archives) {
     const blue = match.names.blue || DEFAULT_NAMES.blue;
     const red = match.names.red || DEFAULT_NAMES.red;
@@ -558,9 +560,16 @@ function createMatchSession() {
       log = Array.isArray(data.log) ? data.log : [];
       archives = Array.isArray(data.archives) ? data.archives.filter(isValidArchive) : [];
       if (data.screen === 'setup' || !Array.isArray(data.history)) return false;
-      history = data.history.filter((h) => h && (h.team === 'blue' || h.team === 'red'));
+      // Le type de chaque point (utile à l'annulation) est recalculé en rejouant le match.
+      state = initialState();
+      history = data.history
+        .filter((h) => h && (h.team === 'blue' || h.team === 'red'))
+        .map((h) => {
+          const result = applyPoint(state, h.team);
+          state = result.state;
+          return { team: h.team, source: h.source === 'voice' ? 'voice' : 'touch', type: result.event.type };
+        });
       counters = Object.assign(newCounters(), data.counters);
-      state = replay(history).state;
       return true;
     },
   };
@@ -603,15 +612,15 @@ function isAnnouncementEcho(n) {
 /** Au-delà, la phrase est une conversation (ex. quelqu'un qui explique "il faut dire point bleu") : ignorée. */
 const MAX_COMMAND_WORDS = 3;
 
+/** Mots regardés pour reconnaître un écho d'annonce : la commande et les 2 mots qui la précèdent ("jeu bleu"). */
+const ECHO_CONTEXT_WORDS = 3;
+
 /**
- * Retourne 'blue' | 'red' | 'undo' | null (première commande trouvée dans le texte).
- * @param {string} text
+ * Première commande présente dans un texte déjà normalisé, sans aucun filtre.
+ * @param {string} n
  * @returns {Command|null}
  */
-function detectCommand(text) {
-  const n = normalize(text);
-  if (n.split(' ').length > MAX_COMMAND_WORDS) return null;
-  if (isAnnouncementEcho(n)) return null;
+function firstCommand(n) {
   let best = null;
   let bestIndex = Infinity;
   for (const { cmd, re } of COMMAND_PATTERNS) {
@@ -622,6 +631,18 @@ function detectCommand(text) {
     }
   }
   return best;
+}
+
+/**
+ * Retourne 'blue' | 'red' | 'undo' | null (première commande trouvée dans le texte).
+ * @param {string} text
+ * @returns {Command|null}
+ */
+function detectCommand(text) {
+  const n = normalize(text);
+  if (n.split(' ').length > MAX_COMMAND_WORDS) return null;
+  if (isAnnouncementEcho(n)) return null;
+  return firstCommand(n);
 }
 
 /** Au-delà de ce nombre de mots sans silence, l'écoute repart de zéro (phrase trop longue). */
@@ -639,9 +660,9 @@ const MAX_PHRASE_WORDS = 10;
 function detectInNewWords(text, from) {
   const words = normalize(text).split(' ').filter(Boolean);
   for (let k = from; k < words.length; k++) {
-    const cmd = detectCommand(words[k]);
+    const cmd = firstCommand(words[k]);
     if (!cmd) continue;
-    const context = words.slice(Math.max(0, k - MAX_COMMAND_WORDS + 1), k + 1).join(' ');
+    const context = words.slice(Math.max(0, k - ECHO_CONTEXT_WORDS + 1), k + 1).join(' ');
     if (!isAnnouncementEcho(context)) return { cmd, words: k + 1 };
   }
   return { cmd: null, words: words.length };
@@ -780,7 +801,7 @@ if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     initialState, applyPoint, replay, numberFr, gamePointsPhrase, tiebreakPhrase,
     gamesPhrase, setsPhrase, announceEvent, undoPhrase, scorePhrase, displayPoints, formatSet,
-    normalize, detectCommand, detectInNewWords, createPhraseListener, createEchoGuard,
+    normalize, isAnnouncementEcho, detectCommand, detectInNewWords, createPhraseListener, createEchoGuard,
     MAX_PHRASE_WORDS, PHRASE_CONTINUATION_MS, ECHO_GUARD_MS, SPEECH_MAX_MS, TAP_DEBOUNCE_MS, STORAGE_KEY,
     restartPlan, RESTART_DELAY_MS, BACKOFF_DELAY_MS,
     formatLog, formatScore, formatAllLogs, exportFileName, createMatchSession, LOG_MAX, ARCHIVES_MAX,
@@ -794,7 +815,10 @@ if (typeof module !== 'undefined' && module.exports) {
 if (typeof document !== 'undefined') {
   (function () {
     const ANNOUNCE_DELAY_MS = 180; // le bip passe avant l'annonce
-    const SAVE_DELAY_MS = 1000;   // les lignes de journal sont sauvegardées par paquets
+    const SAVE_DELAY_MS = 1000;      // les lignes de journal sont sauvegardées par paquets
+    const HEARD_DISPLAY_MS = 6000;   // durée d'affichage de « Entendu : … »
+    const FLASH_MS = 180;            // éclair de la zone qui marque
+    const BUTTON_MESSAGE_MS = 1000;  // message temporaire sur le bouton d'envoi
 
     const $ = (id) => document.getElementById(id);
 
@@ -1178,7 +1202,7 @@ if (typeof document !== 'undefined') {
       const el = $('heard');
       el.textContent = 'Entendu : « ' + transcript.trim() + ' »' + (note ? ' — ' + note : '');
       clearTimeout(heardTimer);
-      heardTimer = setTimeout(() => { el.textContent = ''; }, 6000);
+      heardTimer = setTimeout(() => { el.textContent = ''; }, HEARD_DISPLAY_MS);
     }
 
     function teamName(team) {
@@ -1252,7 +1276,7 @@ if (typeof document !== 'undefined') {
     function flashZone(team) {
       const el = $('zone-' + team);
       el.classList.add('flash');
-      setTimeout(() => el.classList.remove('flash'), 180);
+      setTimeout(() => el.classList.remove('flash'), FLASH_MS);
     }
 
     function announce(text, kind) {
@@ -1308,10 +1332,13 @@ if (typeof document !== 'undefined') {
       button.hidden = (session.archives.length === 0);
     }
 
+    /** Affiche un message temporaire sur le bouton d'envoi, puis remet son texte d'origine (celui du HTML). */
+    let shareLabel = null;
     function flashButton(message) {
       const button = $('btn-share-logs');
+      if (shareLabel === null) shareLabel = button.textContent;
       button.textContent = message;
-      setTimeout(() => button.textContent = 'Envoyer les Logs', 1000);
+      setTimeout(() => { button.textContent = shareLabel; }, BUTTON_MESSAGE_MS);
     }
 
     /** Envoie le journal de tous les matchs archivés : partage de fichier, ou copie en secours. */
@@ -1319,7 +1346,7 @@ if (typeof document !== 'undefined') {
       const now = new Date();
       const text = formatAllLogs(session.archives, now);
       const file = new File([text], exportFileName(now), { type: 'text/plain' });
-      const shareData = { files: [file], title: 'Journal Score' };
+      const shareData = { files: [file], title: JOURNAL_TITLE };
       const canShareFile = navigator.canShare && navigator.canShare(shareData);
 
       try {

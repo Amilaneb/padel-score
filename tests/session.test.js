@@ -142,3 +142,12 @@ test('command : point après la fin du match → refusé, et noté comme tel au 
   assert.equal(session.log.at(-1).result, 'refused');
   assert.equal(session.command('undo', 'touch', '', 100).kind, 'undo');   // « annule » reste possible
 });
+
+test('reprise : le type de chaque point est recalculé (annulation correcte même avec une sauvegarde ancienne)', () => {
+  const restored = createMatchSession();
+  // Sauvegarde sans type ni source, 4 points bleus = un jeu
+  restored.load({ screen: 'game', history: Array(4).fill({ team: 'blue' }) });
+  assert.equal(restored.history.at(-1).type, 'game');
+  assert.equal(restored.history[0].source, 'touch');
+  assert.equal(restored.command('undo', 'touch', '', 0).say, 'point annulé, retour à quarante zéro, zéro jeu partout');
+});
