@@ -109,6 +109,14 @@ test.describe('reconnaissance en ligne', () => {
     expect(await page.locator('#points-blue').textContent()).toBe('15');
   });
 
+  test('la même équipe marque deux fois de suite à la voix : deux points', async ({ page }) => {
+    await hear(page, 0, ['bleu'], true);
+    await expect(page.locator('#points-blue')).toHaveText('15');
+    await page.waitForTimeout(1600);   // fin de l'annonce, et phrase précédente terminée
+    await hear(page, 1, ['bleu'], true);
+    await expect(page.locator('#points-blue')).toHaveText('30');
+  });
+
   test('Android : la phrase qui grandit arrive en résultats successifs, le point est compté une fois', async ({ page }) => {
     // Comme dans le journal du 02/11 : chaque version de la phrase arrive comme un nouveau résultat définitif
     await hear(page, 0, ['et'], true);

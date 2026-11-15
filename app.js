@@ -485,11 +485,85 @@ function detectInNewWords(text, from) {
   return { cmd: null, words: words.length };
 }
 
+/** Délai pendant lequel un nouveau résultat peut encore être la suite de la phrase précédente. */
+const PHRASE_CONTINUATION_MS = 1500;
+
+/**
+ * Ce que l'écoute de phrase décide pour un résultat du micro.
+ * @typedef {Object} HearDecision
+ * @property {'command'|'ignored'|'unknown'|'interim'|'none'} type
+ *   command : nouvelle commande à appliquer · ignored : phrase définitive entendue pendant une annonce ·
+ *   unknown : phrase définitive sans commande · interim : phrase en cours sans commande · none : rien à faire
+ * @property {Command} [cmd]       la commande (type 'command')
+ * @property {boolean} restart     phrase trop longue sans silence : relancer l'écoute tout de suite
+ */
+
+/**
+ * Écoute de phrase : décide, pour chaque résultat du micro, s'il contient une NOUVELLE commande.
+ * Garde en mémoire la phrase en cours et ses mots déjà traités, pour trouver « bleu » au milieu
+ * d'une phrase sans jamais compter deux fois le même mot. Une phrase continue tant qu'un résultat
+ * commence par ses mots déjà traités : sur Android, Chrome renvoie la phrase qui grandit
+ * (« et », « et c'est du », « et c'est du rouge »…) en résultats définitifs successifs.
+ * Après un résultat définitif, la phrase n'est plus continuée au-delà de PHRASE_CONTINUATION_MS :
+ * un « bleu » dit plus tard est une nouvelle commande, même identique.
+ */
+function createPhraseListener() {
+  let words = [];        // phrase en cours (mots normalisés)
+  let consumed = 0;      // nombre de ses mots déjà traités
+  let closedAt = null;   // instant du dernier résultat définitif, ou null si la phrase est en cours
+  const toWords = (text) => normalize(text).split(' ').filter(Boolean);
+
+  return {
+    /** Nouvelle session d'écoute : on oublie la phrase en cours. */
+    reset() {
+      words = [];
+      consumed = 0;
+      closedAt = null;
+    },
+
+    /**
+     * @param {Object} result
+     * @param {string[]} result.transcripts   interprétations du micro, la plus probable en premier
+     * @param {boolean} result.isFinal
+     * @param {boolean} result.muted          l'appli parle (anti-écho) : tout ce qui est entendu est consommé
+     * @param {number} result.now             heure (ms)
+     * @returns {HearDecision}
+     */
+    hear({ transcripts, isFinal, muted, now }) {
+      const heard = toWords(transcripts[0] || '');
+      const continues = consumed > 0
+        && (closedAt === null || now - closedAt <= PHRASE_CONTINUATION_MS)
+        && words.slice(0, consumed).every((w, k) => heard[k] === w);
+      const from = continues ? consumed : 0;
+      words = heard;
+      consumed = from;
+      closedAt = isFinal ? now : null;
+      const restart = !isFinal && heard.length >= MAX_PHRASE_WORDS;
+
+      if (muted) {
+        consumed = heard.length;
+        return { type: isFinal && heard.length > from ? 'ignored' : 'none', restart };
+      }
+      for (const text of transcripts) {
+        const found = detectInNewWords(text, from);
+        if (found.cmd) {
+          words = toWords(text);   // les mots comptés sont ceux de l'interprétation retenue
+          consumed = found.words;
+          return { type: 'command', cmd: found.cmd, restart };
+        }
+      }
+      if (!isFinal) return { type: heard.length > 0 ? 'interim' : 'none', restart };
+      return { type: from === 0 && heard.length > 0 ? 'unknown' : 'none', restart };
+    },
+  };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     initialState, applyPoint, replay, numberFr, gamePointsPhrase, tiebreakPhrase,
     gamesPhrase, setsPhrase, announceEvent, undoPhrase, displayPoints, formatSet,
-    normalize, detectCommand, detectInNewWords, MAX_PHRASE_WORDS,
+    normalize, detectCommand, detectInNewWords, createPhraseListener,
+    MAX_PHRASE_WORDS, PHRASE_CONTINUATION_MS,
     formatLog, formatScore, formatAllLogs, isWorthArchiving,
   };
 }
@@ -618,11 +692,7 @@ if (typeof document !== 'undefined') {
       startedAt: 0,
       quickFails: 0,
       restartTimer: null,
-      // Phrase en cours d'écoute (mots normalisés) et nombre de ses mots déjà traités.
-      // Suivi par le contenu et non par numéro : sur Android, Chrome renvoie la phrase qui grandit
-      // (« et », « et c'est du », « et c'est du rouge »…) sous forme de résultats successifs.
-      phraseWords: [],
-      consumed: 0,
+      listener: createPhraseListener(),
       quickRestart: false,   // relance immédiate demandée (phrase trop longue)
       // Reconnaissance sur l'appareil (Chrome récent) : 'local' si active, sinon 'cloud'.
       mode: 'cloud',
@@ -694,8 +764,7 @@ if (typeof document !== 'undefined') {
 
         rec.onstart = () => {
           this.startedAt = Date.now();
-          this.phraseWords = [];   // nouvelle session d'écoute : nouvelle phrase
-          this.consumed = 0;
+          this.listener.reset();   // nouvelle session d'écoute : nouvelle phrase
           setMicStatus('listening');
           addLog('mic', this.mode, 'start');
         };
@@ -704,47 +773,31 @@ if (typeof document !== 'undefined') {
           for (let i = e.resultIndex; i < e.results.length; i++) {
             const result = e.results[i];
             const transcripts = Array.from(result, (alt) => alt.transcript);
-            const transcript = transcripts[0];
             const heard = transcripts.join(' / ');
-            const words = normalize(transcript).split(' ').filter(Boolean);
-            const total = words.length;
-            // Même phrase qui continue (elle commence par les mots déjà traités) : on reprend après eux.
-            const sameStart = this.consumed > 0
-              && this.phraseWords.slice(0, this.consumed).every((w, k) => words[k] === w);
-            const from = sameStart ? this.consumed : 0;
-            this.phraseWords = words;
-            this.consumed = from;
-
-            if (Speaker.busy()) {
-              // Pendant l'annonce : tout ce qui est entendu est consommé (écho, ou joueurs qui parlent en même temps).
-              this.consumed = total;
-              if (result.isFinal && total > from) {
+            const decision = this.listener.hear({
+              transcripts, isFinal: result.isFinal, muted: Speaker.busy(), now: Date.now(),
+            });
+            switch (decision.type) {
+              case 'command':
+                addLog('voice', heard + (result.isFinal ? '' : ' [provisoire]'), decision.cmd);
+                showHeard(transcripts[0], null);
+                handleCommand(decision.cmd, 'voice');
+                break;
+              case 'ignored':
                 addLog('voice', heard, 'ignored');
-                showHeard(transcript, 'ignoré pendant l\'annonce');
-              }
-              continue;
+                showHeard(transcripts[0], 'ignoré pendant l\'annonce');
+                break;
+              case 'unknown':
+                addLog('voice', heard, 'unknown');
+                showHeard(transcripts[0], 'non reconnu');
+                break;
+              case 'interim':
+                showHeard(transcripts[0], '…');   // montre aux joueurs que l'appli les entend
+                break;
+              default: break;
             }
-
-            // Commande dans les mots nouveaux de la phrase (provisoire ou définitive) : on agit tout de suite.
-            let found = null;
-            for (const t of transcripts) {
-              const r = detectInNewWords(t, from);
-              if (r.cmd) { found = r; break; }
-            }
-            if (found) {
-              this.consumed = found.words;
-              addLog('voice', heard + (result.isFinal ? '' : ' [provisoire]'), found.cmd);
-              showHeard(transcript, null);
-              handleCommand(found.cmd, 'voice');
-            } else if (!result.isFinal) {
-              showHeard(transcript, '…');   // montre aux joueurs que l'appli les entend
-            } else if (from === 0 && total > 0) {
-              addLog('voice', heard, 'unknown');
-              showHeard(transcript, 'non reconnu');
-            }
-
             // Phrase trop longue sans silence : on efface tout et on repart de zéro tout de suite.
-            if (!result.isFinal && total >= MAX_PHRASE_WORDS) {
+            if (decision.restart) {
               this.restartNow();
               break;
             }
