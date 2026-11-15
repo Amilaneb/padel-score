@@ -426,6 +426,18 @@ const COMMAND_PATTERNS = [
   { cmd: 'undo', re: /\bannule/ },
 ];
 
+/**
+ * Le texte (normalisé) ressemble-t-il à l'écho d'une annonce de l'appli ?
+ * @param {string} n
+ * @returns {boolean}
+ */
+function isAnnouncementEcho(n) {
+  // "point annulé, retour à ..."
+  if (/\bretour a\b/.test(n)) return true;
+  // Annonces contenant une couleur : "jeu bleu", "avantage rouge", "set bleu", "équipe bleue"...
+  return /\b(jeu|jeux|avantage|set|sets|match|equipe)\b/.test(n);
+}
+
 /** Au-delà, la phrase est une conversation (ex. quelqu'un qui explique "il faut dire point bleu") : ignorée. */
 const MAX_COMMAND_WORDS = 3;
 
@@ -437,10 +449,7 @@ const MAX_COMMAND_WORDS = 3;
 function detectCommand(text) {
   const n = normalize(text);
   if (n.split(' ').length > MAX_COMMAND_WORDS) return null;
-  // Écho de notre propre annonce "point annulé, retour à ..." : à ignorer.
-  if (/\bretour a\b/.test(n)) return null;
-  // Écho de nos annonces contenant une couleur ("jeu bleu", "avantage rouge", "équipe bleue"...) : à ignorer.
-  if (/\b(jeu|jeux|avantage|set|sets|match|equipe)\b/.test(n)) return null;
+  if (isAnnouncementEcho(n)) return null;
   let best = null;
   let bestIndex = Infinity;
   for (const { cmd, re } of COMMAND_PATTERNS) {
@@ -453,11 +462,35 @@ function detectCommand(text) {
   return best;
 }
 
+/** Au-delà de ce nombre de mots sans silence, l'écoute repart de zéro (phrase trop longue). */
+const MAX_PHRASE_WORDS = 10;
+
+/**
+ * Cherche une commande dans les mots NOUVEAUX d'une phrase en cours d'écoute.
+ * Les `from` premiers mots ont déjà été traités (commande prise, ou entendus pendant une annonce) :
+ * on ne les relit pas, ce qui permet de trouver « bleu » au milieu d'une phrase sans le compter deux fois.
+ * Chaque mot est vérifié avec les 2 mots qui le précèdent, pour reconnaître les échos d'annonce ("jeu bleu").
+ * @param {string} text   la phrase entendue jusqu'ici
+ * @param {number} from   nombre de mots déjà traités
+ * @returns {{cmd: Command|null, words: number}}  la commande et le nombre de mots traités après elle
+ */
+function detectInNewWords(text, from) {
+  const words = normalize(text).split(' ').filter(Boolean);
+  for (let k = from; k < words.length; k++) {
+    const cmd = detectCommand(words[k]);
+    if (!cmd) continue;
+    const context = words.slice(Math.max(0, k - MAX_COMMAND_WORDS + 1), k + 1).join(' ');
+    if (!isAnnouncementEcho(context)) return { cmd, words: k + 1 };
+  }
+  return { cmd: null, words: words.length };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     initialState, applyPoint, replay, numberFr, gamePointsPhrase, tiebreakPhrase,
     gamesPhrase, setsPhrase, announceEvent, undoPhrase, displayPoints, formatSet,
-    normalize, detectCommand, formatLog, formatScore, formatAllLogs, isWorthArchiving,
+    normalize, detectCommand, detectInNewWords, MAX_PHRASE_WORDS,
+    formatLog, formatScore, formatAllLogs, isWorthArchiving,
   };
 }
 
@@ -585,7 +618,12 @@ if (typeof document !== 'undefined') {
       startedAt: 0,
       quickFails: 0,
       restartTimer: null,
-      handled: new Set(),   // numéros des résultats déjà transformés en commande (session en cours)
+      // Phrase en cours d'écoute (mots normalisés) et nombre de ses mots déjà traités.
+      // Suivi par le contenu et non par numéro : sur Android, Chrome renvoie la phrase qui grandit
+      // (« et », « et c'est du », « et c'est du rouge »…) sous forme de résultats successifs.
+      phraseWords: [],
+      consumed: 0,
+      quickRestart: false,   // relance immédiate demandée (phrase trop longue)
       // Reconnaissance sur l'appareil (Chrome récent) : 'local' si active, sinon 'cloud'.
       mode: 'cloud',
       // available | downloadable | downloading | unavailable | unsupported | unknown
@@ -631,6 +669,8 @@ if (typeof document !== 'undefined') {
 
       setMode(mode) {
         if (!this.rec || this.mode === mode) return;
+        // Une fois la reconnaissance sur le téléphone en place, on ne revient jamais au service en ligne.
+        if (mode === 'cloud' && this.localStatus === 'available') return;
         this.mode = mode;
         this.rec.processLocally = mode === 'local';
         renderVoiceMode();
@@ -654,64 +694,73 @@ if (typeof document !== 'undefined') {
 
         rec.onstart = () => {
           this.startedAt = Date.now();
-          this.handled.clear();   // les numéros de résultats repartent de 0 à chaque session d'écoute
+          this.phraseWords = [];   // nouvelle session d'écoute : nouvelle phrase
+          this.consumed = 0;
           setMicStatus('listening');
           addLog('mic', this.mode, 'start');
-        };
-
-        /** Première commande trouvée parmi les interprétations du micro. */
-        const detectAny = (transcripts) => {
-          for (const t of transcripts) {
-            const cmd = detectCommand(t);
-            if (cmd) return cmd;
-          }
-          return null;
         };
 
         rec.onresult = (e) => {
           for (let i = e.resultIndex; i < e.results.length; i++) {
             const result = e.results[i];
-            // Commande déjà prise sur une version provisoire de cette phrase : on ne la compte pas deux fois.
-            if (this.handled.has(i)) continue;
             const transcripts = Array.from(result, (alt) => alt.transcript);
             const transcript = transcripts[0];
             const heard = transcripts.join(' / ');
-
-            if (!result.isFinal) {
-              // Phrase pas encore finie : on agit tout de suite si elle contient déjà une commande.
-              if (Speaker.busy()) continue;
-              const cmd = detectAny(transcripts);
-              if (!cmd) {
-                showHeard(transcript, '…');   // montre aux joueurs que l'appli les entend
-                continue;
-              }
-              this.handled.add(i);
-              addLog('voice', heard + ' [provisoire]', cmd);
-              showHeard(transcript, null);
-              handleCommand(cmd, 'voice');
-              continue;
-            }
+            const words = normalize(transcript).split(' ').filter(Boolean);
+            const total = words.length;
+            // Même phrase qui continue (elle commence par les mots déjà traités) : on reprend après eux.
+            const sameStart = this.consumed > 0
+              && this.phraseWords.slice(0, this.consumed).every((w, k) => words[k] === w);
+            const from = sameStart ? this.consumed : 0;
+            this.phraseWords = words;
+            this.consumed = from;
 
             if (Speaker.busy()) {
-              addLog('voice', heard, 'ignored');
-              showHeard(transcript, 'ignoré pendant l\'annonce');
+              // Pendant l'annonce : tout ce qui est entendu est consommé (écho, ou joueurs qui parlent en même temps).
+              this.consumed = total;
+              if (result.isFinal && total > from) {
+                addLog('voice', heard, 'ignored');
+                showHeard(transcript, 'ignoré pendant l\'annonce');
+              }
               continue;
             }
 
-            const cmd = detectAny(transcripts);
-            addLog('voice', heard, cmd || 'unknown');
-            showHeard(transcript, cmd ? null : 'non reconnu');
-            if (cmd) handleCommand(cmd, 'voice');
+            // Commande dans les mots nouveaux de la phrase (provisoire ou définitive) : on agit tout de suite.
+            let found = null;
+            for (const t of transcripts) {
+              const r = detectInNewWords(t, from);
+              if (r.cmd) { found = r; break; }
+            }
+            if (found) {
+              this.consumed = found.words;
+              addLog('voice', heard + (result.isFinal ? '' : ' [provisoire]'), found.cmd);
+              showHeard(transcript, null);
+              handleCommand(found.cmd, 'voice');
+            } else if (!result.isFinal) {
+              showHeard(transcript, '…');   // montre aux joueurs que l'appli les entend
+            } else if (from === 0 && total > 0) {
+              addLog('voice', heard, 'unknown');
+              showHeard(transcript, 'non reconnu');
+            }
+
+            // Phrase trop longue sans silence : on efface tout et on repart de zéro tout de suite.
+            if (!result.isFinal && total >= MAX_PHRASE_WORDS) {
+              this.restartNow();
+              break;
+            }
           }
         };
 
         rec.onerror = (e) => {
           if (this.wanted) addLog('mic', e.message || '', 'error:' + e.error);
-          // Échec du mode « sur l'appareil » : on revient au service en ligne sans bloquer le vocal.
+          // Échec du mode « sur l'appareil » : on ne repasse PAS par les serveurs de Google
+          // (lent et dépendant du réseau) ; le vocal s'arrête et le match continue au toucher.
           if (this.mode === 'local'
             && (e.error === 'language-not-supported' || e.error === 'service-not-allowed')) {
             this.localStatus = 'unavailable';
-            this.setMode('cloud');
+            this.blocked = true;
+            this.wanted = false;
+            setMicStatus('denied', 'local-failed');
             return;
           }
           if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
@@ -727,6 +776,13 @@ if (typeof document !== 'undefined') {
             if (!this.blocked) setMicStatus('off');
             return;
           }
+          if (this.quickRestart) {
+            // Relance demandée par l'appli (phrase trop longue) : immédiate, sans compter comme un échec.
+            this.quickRestart = false;
+            addLog('mic', this.mode, 'reset');
+            this.start();
+            return;
+          }
           addLog('mic', this.mode, 'end');
           // Session coupée par le navigateur : on relance automatiquement.
           const shortLived = Date.now() - this.startedAt < 1500;
@@ -739,6 +795,13 @@ if (typeof document !== 'undefined') {
 
         this.rec = rec;
         this.checkLocal();
+      },
+
+      /** Efface la phrase en cours et repart de zéro (relance immédiate de l'écoute). */
+      restartNow() {
+        if (!this.rec || this.quickRestart) return;
+        this.quickRestart = true;
+        try { this.rec.abort(); } catch (e) { this.quickRestart = false; }
       },
 
       start() {
@@ -797,7 +860,10 @@ if (typeof document !== 'undefined') {
           break;
         case 'denied':
           text.textContent = 'Micro bloqué';
-          warn.textContent = detail === 'audio-capture'
+          warn.textContent = detail === 'local-failed'
+            ? 'La reconnaissance vocale sur le téléphone a échoué : utilisez les zones tactiles '
+              + '(rechargez la page pour réessayer).'
+            : detail === 'audio-capture'
             ? 'Aucun micro détecté : utilisez les zones tactiles.'
             : 'Accès au micro refusé : utilisez les zones tactiles. '
               + 'Pour réactiver le vocal, autorisez le micro pour ce site puis rechargez la page.';

@@ -63,12 +63,15 @@ ambiguïté puisque l'application ne suit pas le service.
   le même point en même temps. Pour enchaîner plusieurs « annule », attendre la fin de chaque annonce.
   Par sécurité, une phrase contenant un mot des annonces (« jeu », « avantage », « set », « match »,
   « équipe ») n'est jamais prise pour une commande, même si elle contient « bleu » ou « rouge ».
-- **Phrases courtes uniquement** : une phrase de plus de 3 mots est ignorée (conversation entre
-  joueurs, pas une commande).
+- **Commande au milieu d'une phrase** : « bleu », « rouge » ou « annule » est pris dès qu'il est
+  entendu, même au milieu d'une phrase (« et c'est du rouge »), sans attendre la fin de la phrase.
+  Les mots déjà traités ne sont pas relus, pour ne jamais compter deux fois le même point.
+- **Phrase trop longue** : au-delà de 10 mots sans silence, l'écoute repart de zéro immédiatement.
 - **Reconnaissance sur le téléphone** : si Chrome sait reconnaître le français directement sur
   l'appareil (API `processLocally`, Chrome récent), l'application l'utilise ; si le pack de langue est
-  téléchargeable, il est téléchargé au démarrage du match. Sinon, ou en cas d'erreur, elle utilise
-  le service en ligne habituel. Le mode utilisé est affiché sur l'écran d'accueil et en bas de l'écran
+  téléchargeable, il est téléchargé au démarrage du match. Une fois ce mode en place, l'application
+  ne passe plus jamais par le service en ligne : en cas d'erreur, le vocal s'arrête et le match
+  continue au toucher. Si le téléphone ne propose pas ce mode, elle utilise le service en ligne. Le mode utilisé est affiché sur l'écran d'accueil et en bas de l'écran
   de jeu (« Vocal : sur le téléphone / en ligne »). Objectif : éviter le bip système d'Android à
   chaque relance du micro, émis par le service de reconnaissance en ligne. À ce jour, Chrome Android
   répond généralement « indisponible » : ce mode concerne surtout Chrome ordinateur pour l'instant.
