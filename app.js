@@ -394,14 +394,122 @@ function formatAllLogs(archives) {
   // (deux retours à la ligne), et on renvoie le texte obtenu.
   return logFile.join('\n\n');
 }
+
+/* ---------- Match en cours : état, journal, archives, sauvegarde ---------- */
+
+const LOG_MAX = 2000;      // entrées de journal gardées par match
+const ARCHIVES_MAX = 10;   // matchs gardés dans les archives
+
+/** @typedef {{voice: number, touch: number, voiceUndo: number, touchUndo: number}} Counters */
+/** @typedef {{team: Team, source: 'voice'|'touch', type: EventType}} HistoryEntry */
+
+/** @returns {Counters} */
+const newCounters = () => ({ voice: 0, touch: 0, voiceUndo: 0, touchUndo: 0 });
+
+/** @param {*} a  archive relue depuis la sauvegarde */
+const isValidArchive = (a) => !!(a && a.names && a.state && Array.isArray(a.log) && a.log.length > 0);
+
 /**
- * Un match mérite d'être archivé s'il y a eu au moins un point marqué
- * (évite de remplir les archives avec des faux départs).
- * @param {LogEntry[]} log
- * @returns {boolean}
+ * Match en cours : possède les noms, l'historique des points (d'où le score est recalculé),
+ * les compteurs de saisie, le journal et les archives. Il produit et relit aussi la sauvegarde :
+ * le format sauvegardé n'existe qu'ici.
  */
-function isWorthArchiving(log) {
-  return log.some((entry) => entry.result === 'blue' || entry.result === 'red');
+function createMatchSession() {
+  let names = { blue: '', red: '' };
+  /** @type {HistoryEntry[]} */
+  let history = [];
+  let state = initialState();
+  let counters = newCounters();
+  /** @type {LogEntry[]} */
+  let log = [];
+  /** @type {Archive[]} */
+  let archives = [];
+
+  return {
+    get names() { return names; },
+    get state() { return state; },
+    get history() { return history; },
+    get counters() { return counters; },
+    get log() { return log; },
+    get archives() { return archives; },
+
+    /** @param {Names} newNames */
+    start(newNames) {
+      names = { blue: newNames.blue || '', red: newNames.red || '' };
+      history = [];
+      state = initialState();
+      counters = newCounters();
+      log = [];
+    },
+
+    /**
+     * Point pour `team`. Renvoie l'événement, ou null si le match est déjà fini.
+     * @param {Team} team
+     * @param {'voice'|'touch'} source
+     * @returns {GameEvent|null}
+     */
+    point(team, source) {
+      if (state.winner) return null;
+      const result = applyPoint(state, team);
+      history.push({ team, source, type: result.event.type });
+      state = result.state;
+      counters[source] += 1;
+      return result.event;
+    },
+
+    /**
+     * Retire le dernier point. Renvoie le point retiré, ou null s'il n'y avait rien à annuler.
+     * @param {'voice'|'touch'} source
+     * @returns {HistoryEntry|null}
+     */
+    undo(source) {
+      counters[source === 'voice' ? 'voiceUndo' : 'touchUndo'] += 1;
+      if (history.length === 0) return null;
+      const undone = history.pop();
+      state = replay(history).state;
+      return undone;
+    },
+
+    /** @param {LogEntry} entry */
+    addLog(entry) {
+      log.push(entry);
+      if (log.length > LOG_MAX) log.shift();
+    },
+
+    /** Fin du match (Quitter / Nouveau match) : archivé si au moins un point a été marqué. */
+    quit() {
+      if (counters.voice + counters.touch > 0) {
+        archives.push({ names: { ...names }, state, log });
+        if (archives.length > ARCHIVES_MAX) archives.shift();
+      }
+      history = [];
+      state = initialState();
+      counters = newCounters();
+      log = [];
+    },
+
+    /** Données à sauvegarder. @param {string} screen  écran affiché */
+    toSave(screen) {
+      return { screen, names, history, counters, log, archives };
+    },
+
+    /**
+     * Relit une sauvegarde. Renvoie true s'il y a un match en cours à reprendre.
+     * @param {*} data
+     * @returns {boolean}
+     */
+    load(data) {
+      if (!data || typeof data !== 'object') return false;
+      if (data.names) names = { blue: data.names.blue || '', red: data.names.red || '' };
+      log = Array.isArray(data.log) ? data.log : [];
+      archives = Array.isArray(data.archives) ? data.archives.filter(isValidArchive) : [];
+      if (data.screen === 'setup' || !Array.isArray(data.history)) return false;
+      history = data.history.filter((h) => h && (h.team === 'blue' || h.team === 'red'));
+      counters = Object.assign(newCounters(), data.counters);
+      state = replay(history).state;
+      return true;
+    },
+  };
 }
 
 /* ---------- Reconnaissance des commandes vocales ---------- */
@@ -601,7 +709,7 @@ if (typeof module !== 'undefined' && module.exports) {
     gamesPhrase, setsPhrase, announceEvent, undoPhrase, displayPoints, formatSet,
     normalize, detectCommand, detectInNewWords, createPhraseListener, createEchoGuard,
     MAX_PHRASE_WORDS, PHRASE_CONTINUATION_MS, ECHO_GUARD_MS, SPEECH_MAX_MS,
-    formatLog, formatScore, formatAllLogs, isWorthArchiving,
+    formatLog, formatScore, formatAllLogs, createMatchSession, LOG_MAX, ARCHIVES_MAX,
   };
 }
 
@@ -615,22 +723,12 @@ if (typeof document !== 'undefined') {
     const TAP_DEBOUNCE_MS = 350; // anti double-tap accidentel
     const ANNOUNCE_DELAY_MS = 180; // le bip passe avant l'annonce
     const LANG = 'fr-FR';
-    const LOG_MAX = 1999;
-    const ARCHIVES_MAX = 10;
+    const SAVE_DELAY_MS = 1000;   // les lignes de journal sont sauvegardées par paquets
 
     const $ = (id) => document.getElementById(id);
 
-    const app = {
-      screen: 'setup',
-      names: { blue: '', red: '' },
-      history: [],   // [{ team, source, type }]
-      state: initialState(),
-      counters: { voice: 0, touch: 0, voiceUndo: 0, touchUndo: 0 },
-      /** @type {LogEntry[]} */
-      log: [],
-      /** @type {Archive[]} */
-      archives: [],
-    };
+    const session = createMatchSession();
+    let screen = 'setup';   // écran affiché : 'setup' | 'game' | 'end'
 
     /* ---------- Son de confirmation ---------- */
 
@@ -981,11 +1079,11 @@ if (typeof document !== 'undefined') {
     }
 
     function teamName(team) {
-      return app.names[team] || (team === 'blue' ? 'Bleu' : 'Rouge');
+      return session.names[team] || (team === 'blue' ? 'Bleu' : 'Rouge');
     }
 
     function showScreen(name) {
-      app.screen = name;
+      screen = name;
       $('screen-setup').hidden = name !== 'setup';
       $('screen-game').hidden = name !== 'game';
       $('screen-end').hidden = name !== 'end';
@@ -993,7 +1091,7 @@ if (typeof document !== 'undefined') {
     }
 
     function render() {
-      const s = app.state;
+      const s = session.state;
       const pts = displayPoints(s);
       for (const team of ['blue', 'red']) {
         $('label-' + team).textContent = teamName(team);
@@ -1007,7 +1105,7 @@ if (typeof document !== 'undefined') {
     }
 
     function renderEnd() {
-      const s = app.state;
+      const s = session.state;
       const w = s.winner;
       const winnerEl = $('winner-name');
       winnerEl.textContent = teamName(w);
@@ -1042,7 +1140,7 @@ if (typeof document !== 'undefined') {
         }
       }
 
-      const c = app.counters;
+      const c = session.counters;
       $('end-stats').textContent = 'Saisie : ' + c.voice + ' point(s) à la voix, '
         + c.touch + ' au tactile · Annulations : ' + (c.voiceUndo + c.touchUndo)
         + ' (' + c.voiceUndo + ' à la voix, ' + c.touchUndo + ' au tactile)';
@@ -1063,49 +1161,40 @@ if (typeof document !== 'undefined') {
     /* ---------- Actions ---------- */
 
     function handleCommand(cmd, source) {
-      if (app.screen === 'setup') return;
+      if (screen === 'setup') return;
       if (source === 'touch') addLog('touch', '', cmd);
       if (cmd === 'undo') undo(source);
       else scorePoint(cmd, source);
     }
 
     function scorePoint(team, source) {
-      if (app.state.winner) return; // match terminé : seul "annule" reste actif
-      const { state, event } = applyPoint(app.state, team);
-      app.history.push({ team, source, type: event.type });
-      app.state = state;
-      app.counters[source] += 1;
+      const event = session.point(team, source);
+      if (!event) return; // match terminé : seul "annule" reste actif
       render();
       flashZone(team);
-      announce(announceEvent(event, state), 'point');
+      announce(announceEvent(event, session.state), 'point');
       save();
-      if (state.winner) showScreen('end');
+      if (session.state.winner) showScreen('end');
     }
 
     function undo(source) {
-      app.counters[source === 'voice' ? 'voiceUndo' : 'touchUndo'] += 1;
-      if (app.history.length === 0) {
+      const undone = session.undo(source);
+      if (!undone) {
         announce('rien à annuler', 'undo');
         save();
         return;
       }
-      const undone = app.history.pop();
-      app.state = replay(app.history).state;
       render();
-      if (app.screen === 'end') showScreen('game');
-      announce(undoPhrase(undone.type, app.state, app.history.length), 'undo');
+      if (screen === 'end') showScreen('game');
+      announce(undoPhrase(undone.type, session.state, session.history.length), 'undo');
       save();
     }
 
     function startMatch() {
-      app.names = {
+      session.start({
         blue: $('name-blue').value.trim(),
         red: $('name-red').value.trim(),
-      };
-      app.history = [];
-      app.state = initialState();
-      app.counters = { voice: 0, touch: 0, voiceUndo: 0, touchUndo: 0 };
-      app.log = [];
+      });
       render();
       showScreen('game');
       save();
@@ -1114,22 +1203,11 @@ if (typeof document !== 'undefined') {
     }
 
     function backToSetup() {
-      if (isWorthArchiving(app.log)) {
-        const archive = {
-          names: app.names,
-          state: app.state,
-          log: app.log,
-        };
-        app.archives.push(archive);
-        if (app.archives.length > ARCHIVES_MAX) app.archives.shift();
-      }
-      app.log = [];
+      session.quit();
       Voice.stop();
-      Speaker.supported && window.speechSynthesis.cancel();
-      app.history = [];
-      app.state = initialState();
-      $('name-blue').value = app.names.blue;
-      $('name-red').value = app.names.red;
+      if (Speaker.supported) window.speechSynthesis.cancel();
+      $('name-blue').value = session.names.blue;
+      $('name-red').value = session.names.red;
       showScreen('setup');
       updateShareButton();
       save();
@@ -1137,7 +1215,7 @@ if (typeof document !== 'undefined') {
 
     function updateShareButton() {
       const button = $('btn-share-logs');
-      button.hidden = (app.archives.length === 0);
+      button.hidden = (session.archives.length === 0);
     }
 
     function flashButton(message) {
@@ -1148,7 +1226,7 @@ if (typeof document !== 'undefined') {
 
     async function shareLogs() {
 
-      const allLogs = formatAllLogs(app.archives);
+      const allLogs = formatAllLogs(session.archives);
 
       // 2. Le nom du fichier, avec la date et l'heure d'envoi : journal-padel_11-10-2026_18h42.txt
       const now = new Date();
@@ -1179,17 +1257,34 @@ if (typeof document !== 'undefined') {
 
     /* ---------- Sauvegarde locale (survit à un rechargement) ---------- */
 
+    /** Stockage dans le navigateur (seul adapter aujourd'hui ; les tests unitaires passent par session.toSave/load). */
+    const storage = {
+      read() {
+        try {
+          return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+        } catch (e) {
+          return null;
+        }
+      },
+      write(data) {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        } catch (e) { /* stockage indisponible : sans conséquence */ }
+      },
+    };
+
+    let saveTimer = null;
+
+    /** Sauvegarde tout de suite (score, changement d'écran). */
     function save() {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({
-          screen: app.screen,
-          names: app.names,
-          history: app.history,
-          counters: app.counters,
-          log: app.log,
-          archives: app.archives,
-        }));
-      } catch (e) { /* stockage indisponible : sans conséquence */ }
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      storage.write(session.toSave(screen));
+    }
+
+    /** Sauvegarde un peu plus tard, une seule fois pour plusieurs lignes de journal. */
+    function saveSoon() {
+      if (!saveTimer) saveTimer = setTimeout(save, SAVE_DELAY_MS);
     }
 
     /**
@@ -1198,31 +1293,19 @@ if (typeof document !== 'undefined') {
      * @param {string} result
      */
     function addLog(src, text, result) {
-      if (app.log.length > LOG_MAX) app.log.shift();
-      const newLog = {t: Date.now(), src, text, result};
-      app.log.push(newLog);
-      save();
+      session.addLog({ t: Date.now(), src, text, result });
+      saveSoon();
     }
 
+    /** Relit la sauvegarde. Renvoie true s'il y a un match en cours à reprendre. */
     function restore() {
-      try {
-        const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-        if (!data) return false;
-        app.names = data.names || app.names;
-        $('name-blue').value = app.names.blue || '';
-        $('name-red').value = app.names.red || '';
-        app.log = data.log || [];
-        app.archives = data.archives || [];
-        if (data.screen === 'setup' || !Array.isArray(data.history)) return false;
-        app.history = data.history.filter((h) => h && (h.team === 'blue' || h.team === 'red'));
-        app.counters = Object.assign(app.counters, data.counters);
-        app.state = replay(app.history).state;
-        render();
-        showScreen(app.state.winner ? 'end' : 'game');
-        return true;
-      } catch (e) {
-        return false;
-      }
+      const resume = session.load(storage.read());
+      $('name-blue').value = session.names.blue;
+      $('name-red').value = session.names.red;
+      if (!resume) return false;
+      render();
+      showScreen(session.state.winner ? 'end' : 'game');
+      return true;
     }
 
     /* ---------- Initialisation ---------- */
@@ -1274,10 +1357,13 @@ if (typeof document !== 'undefined') {
       $('btn-share-logs').addEventListener('click', shareLogs);
 
       document.addEventListener('visibilitychange', () => {
-        if (app.screen === 'setup') return;
+        if (screen === 'setup') return;
         // Écran verrouillé / appli en arrière-plan : utile pour expliquer une coupure du micro
         addLog('app', '', document.visibilityState);
-        if (document.visibilityState !== 'visible') return;
+        if (document.visibilityState !== 'visible') {
+          save();   // l'appli peut être fermée en arrière-plan : on ne garde rien en attente
+          return;
+        }
         ScreenLock.request();
         if (Voice.wanted) Voice.start();
       });
@@ -1291,7 +1377,7 @@ if (typeof document !== 'undefined') {
           overlay.hidden = true;
           Beep.unlock();
           Voice.start();
-          const s = app.state;
+          const s = session.state;
           if (!s.winner) {
             const text = s.tiebreak
               ? 'jeu décisif, ' + tiebreakPhrase(s.points)

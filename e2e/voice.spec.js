@@ -75,7 +75,8 @@ test.describe('reconnaissance en ligne', () => {
     await page.waitForTimeout(200);
     expect(await page.locator('#points-blue').textContent()).toBe('0');
     expect(await page.locator('#points-red').textContent()).toBe('0');
-    expect((await voiceLog(page)).map((e) => e.result)).toEqual(['unknown']);
+    // Le journal est sauvegardé par paquets : on attend qu'il le soit
+    await expect.poll(async () => (await voiceLog(page)).map((e) => e.result)).toEqual(['unknown']);
   });
 
   test('deux phrases successives : deux points', async ({ page }) => {
@@ -133,10 +134,10 @@ test.describe('reconnaissance en ligne', () => {
     const startsBefore = await page.evaluate(() => window.recStarts);
     await hear(page, 0, ['on parle on parle on parle encore et encore toujours'], false);   // 10 mots
     await expect.poll(() => page.evaluate(() => window.recStarts)).toBe(startsBefore + 1);
-    const mic = await page.evaluate(() =>
+    const micLog = () => page.evaluate(() =>
       JSON.parse(localStorage.getItem('padel-score-v1')).log.filter((e) => e.src === 'mic').map((e) => e.result));
-    expect(mic).toContain('reset');
-    expect(mic).not.toContain('end');   // relance volontaire, pas une coupure
+    await expect.poll(micLog).toContain('reset');
+    expect(await micLog()).not.toContain('end');   // relance volontaire, pas une coupure
 
     // Après la relance, une nouvelle phrase (numérotée à partir de 0) est bien écoutée
     await hear(page, 0, ['rouge'], false);
