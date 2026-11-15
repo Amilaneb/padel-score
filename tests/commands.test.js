@@ -4,7 +4,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { normalize, detectCommand, initialState, applyPoint, announceEvent } = require('../app.js');
+const {
+  normalize, isAnnouncementEcho, detectCommand, detectInNewWords, initialState, applyPoint, announceEvent,
+} = require('../app.js');
+const { games } = require('./helpers');
 
 test('normalize : minuscules, sans accents ni ponctuation, espaces simples', () => {
   assert.equal(normalize('  Point   BLEU ! '), 'point bleu');
@@ -61,7 +64,6 @@ test('detectCommand : "bleu" ou "rouge" seul suffit', () => {
 
 test('detectCommand : aucune annonce de l\'appli n\'est comprise comme une commande (écho)', () => {
   // Toutes les annonces d'un match complet : points, égalité, avantage, jeux, tie-break, sets, match
-  const games = (team, n) => Array(4 * n).fill(team);
   const deuce = ['blue', 'blue', 'blue', 'red', 'red', 'red', 'blue', 'red', 'red', 'red'];
   const history = [
     ...deuce, ...games('blue', 5), ...games('red', 5), ...games('blue', 1),   // jeu rouge après égalité, puis 6-6
@@ -74,6 +76,37 @@ test('detectCommand : aucune annonce de l\'appli n\'est comprise comme une comma
     ({ state, event } = applyPoint(state, team));
     const announce = announceEvent(event, state);
     assert.equal(detectCommand(announce), null, `annonce comprise comme une commande : "${announce}"`);
+    assert.equal(detectInNewWords(announce, 0).cmd, null, `annonce comprise comme une commande : "${announce}"`);
   }
   assert.equal(state.winner, 'red');
+});
+
+test('detectInNewWords : une commande au milieu d\'une phrase est trouvée', () => {
+  assert.deepEqual(detectInNewWords('ok bon allez bleu', 0), { cmd: 'blue', words: 4 });
+  assert.deepEqual(detectInNewWords('il faut dire rouge tu vois', 0), { cmd: 'red', words: 4 });
+});
+
+test('detectInNewWords : les mots déjà traités ne sont pas relus (pas de double point)', () => {
+  // « bleu » a déjà été compté (1 mot traité) : la suite de la phrase ne le recompte pas
+  assert.deepEqual(detectInNewWords('bleu c\'est bon', 1), { cmd: null, words: 4 });   // « c'est » compte pour 2 mots
+});
+
+test('detectInNewWords : deux commandes dans la même phrase, l\'une après l\'autre', () => {
+  const phrase = 'bleu on continue rouge';
+  const first = detectInNewWords(phrase, 0);
+  assert.deepEqual(first, { cmd: 'blue', words: 1 });
+  assert.deepEqual(detectInNewWords(phrase, first.words), { cmd: 'red', words: 4 });
+});
+
+test('detectInNewWords : écho d\'annonce reconnu même si le début a déjà été traité', () => {
+  // « jeu » entendu pendant l'annonce (déjà traité), « bleu » arrive juste après : c'est l'écho
+  assert.equal(detectInNewWords('jeu bleu', 1).cmd, null);
+  assert.equal(detectInNewWords('match gagné équipe bleue', 0).cmd, null);
+});
+
+test('isAnnouncementEcho : vocabulaire des annonces de l\'appli', () => {
+  assert.equal(isAnnouncementEcho('jeu bleu quatre jeux a trois'), true);
+  assert.equal(isAnnouncementEcho('point annule retour a trente'), true);
+  assert.equal(isAnnouncementEcho('allez bleu'), false);
+  assert.equal(isAnnouncementEcho('jeudi bleu'), false);   // mot entier seulement
 });

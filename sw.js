@@ -4,7 +4,10 @@
 // Stratégie « réseau d'abord » : en ligne, on prend toujours la dernière version publiée
 // (pas de problème de mise à jour) ; sans réseau ou réseau trop lent, on sert la copie gardée.
 
+// Un seul cache, sans numéro de version : la stratégie « réseau d'abord » remplace chaque fichier
+// dès qu'il est rechargé en ligne, il n'y a donc pas d'ancien cache à nettoyer.
 const CACHE = 'padel-score';
+// Tout ce que charge index.html (et les icônes du manifest) : vérifié par tests/sw.test.js.
 const FILES = ['./', 'index.html', 'app.js', 'style.css', 'manifest.json', 'icons/icon-192.png', 'icons/icon-512.png'];
 const NETWORK_TIMEOUT_MS = 3000;   // au-delà, on n'attend plus le réseau (4G faible au club)
 

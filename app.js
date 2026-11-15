@@ -8,7 +8,9 @@
  * Annuler = dépiler le dernier point puis rejouer.
  * ===================================================================== */
 
+const LANG = 'fr-FR';   // langue de la reconnaissance, des annonces et des dates
 const OTHER = { blue: 'red', red: 'blue' };
+const DEFAULT_NAMES = { blue: 'Bleu', red: 'Rouge' };   // nom affiché quand l'équipe n'a pas de nom
 const COLOR_WORD = { blue: 'bleu', red: 'rouge' };
 const SETS_TO_WIN = 2;
 const GAMES_PER_SET = 6;
@@ -58,8 +60,9 @@ const TIEBREAK_POINTS = 7;
  * @property {number} t          heure, en millisecondes (Date.now())
  * @property {'voice'|'touch'|'mic'|'app'} src
  * @property {string} text       ce qui a été entendu ('' pour un toucher ; mode du micro pour 'mic')
- * @property {string} result     voice/touch : 'blue' | 'red' | 'undo' | 'unknown' | 'ignored'
- *                               mic : 'start' | 'end' | 'error:<code>'   app : 'hidden' | 'visible'
+ * @property {string} result     voice/touch : 'blue' | 'red' | 'undo' | 'refused' (match terminé) |
+ *                                 'unknown' | 'ignored' (pendant une annonce)
+ *                               mic : 'start' | 'end' | 'reset' | 'error:<code>'   app : 'hidden' | 'visible'
  */
 
 /**
@@ -298,15 +301,21 @@ function announceEvent(event, state) {
  */
 function undoPhrase(undoneType, state, remaining) {
   if (remaining === 0) return 'point annulé, retour au début du match';
-  let text;
-  if (state.tiebreak) {
-    text = 'jeu décisif, ' + tiebreakPhrase(state.points);
-  } else {
-    text = gamePointsPhrase(state.points);
-    const startOfGame = state.points.blue === 0 && state.points.red === 0;
-    if (GAME_ENDING.has(undoneType) || startOfGame) text += ', ' + gamesPhrase(state.games);
-  }
-  return 'point annulé, retour à ' + text;
+  const startOfGame = state.points.blue === 0 && state.points.red === 0;
+  return 'point annulé, retour à ' + scorePhrase(state, GAME_ENDING.has(undoneType) || startOfGame);
+}
+
+/**
+ * Score actuel en toutes lettres : « trente quinze », « jeu décisif, trois à deux »,
+ * suivi des jeux si `withGames` (« quinze zéro, deux jeux à un »).
+ * @param {State} state
+ * @param {boolean} withGames
+ * @returns {string}
+ */
+function scorePhrase(state, withGames) {
+  if (state.tiebreak) return 'jeu décisif, ' + tiebreakPhrase(state.points);
+  const points = gamePointsPhrase(state.points);
+  return withGames ? points + ', ' + gamesPhrase(state.games) : points;
 }
 
 /**
@@ -344,64 +353,226 @@ function formatSet(set, first = 'blue') {
   return txt;
 }
 
-/** @param {LogEntry[]} logs */
-function formatLog(logs) {
-  return logs
-      .map((log, i) => {
-        const date = new Date(log.t).toLocaleTimeString('fr-FR');
-        const gap = i === 0 ? '' : '+' + Math.round((log.t - logs[i - 1].t)/1000) + 's';
-        return [date, gap, log.src, log.result, log.text].join('\t');
-      })
-      .join('\n');
-}
+/* ---------- Journal : export texte ---------- */
 
-/** @param {State} state */
-function formatScore(state) {
-  const gameParts = state.completedSets.map(s => formatSet(s, 'blue'));
-  if (state.winner === null) {
-    gameParts.push(`${state.games.blue}-${state.games.red}`);
-  }
-  return gameParts.join(', ') + (state.winner !== null ? ' (terminé)' : ' (abandonné)');
-}
+const JOURNAL_TITLE = 'Journal Score';   // en-tête du fichier envoyé et titre du partage
 
 /**
- * Texte complet du journal à envoyer : un en-tête, puis un bloc par match archivé.
- * @param {Archive[]} archives
+ * Lignes du journal d'un match, colonnes séparées par des tabulations (se colle dans un tableur) :
+ * heure, écart avec la ligne précédente, source, résultat, texte entendu.
+ * @param {LogEntry[]} logs
  * @returns {string}
  */
-function formatAllLogs(archives) {
-
-  const logFile = [];
-
-  const header = [
-    'Journal App',
-    archives.length + ' match(s)',
-    'envoyé le ' + new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-  ].join(' - ');
-  logFile.push(header);
-
-  for (const match of archives) {
-    const blueTeam = match.names.blue || 'Bleu';
-    const redTeam = match.names.red || 'Rouge';
-    const date = new Date(match.log[0].t).toLocaleDateString('fr-FR');
-    const score = formatScore(match.state);
-    const matchTitle = `### ${blueTeam} vs ${redTeam} - ${date} - ${score} - ${match.log.length} entrées ###`;
-    logFile.push(matchTitle + '\n' + formatLog(match.log));
-  }
-
-  // ── 4. L'ASSEMBLAGE ──────────────────────────────────────────────────────
-  // On colle tous les morceaux de la liste, avec une ligne vide entre chaque
-  // (deux retours à la ligne), et on renvoie le texte obtenu.
-  return logFile.join('\n\n');
+function formatLog(logs) {
+  return logs
+    .map((log, i) => {
+      const time = new Date(log.t).toLocaleTimeString(LANG);
+      const gap = i === 0 ? '' : '+' + Math.round((log.t - logs[i - 1].t) / 1000) + 's';
+      return [time, gap, log.src, log.result, log.text].join('\t');
+    })
+    .join('\n');
 }
+
 /**
- * Un match mérite d'être archivé s'il y a eu au moins un point marqué
- * (évite de remplir les archives avec des faux départs).
- * @param {LogEntry[]} log
- * @returns {boolean}
+ * Score d'un match pour le titre de son bloc : sets terminés, set en cours si le match a été
+ * abandonné, puis le statut. Bleu en premier : « 6-4, 3-1 (abandonné) ».
+ * @param {State} state
+ * @returns {string}
  */
-function isWorthArchiving(log) {
-  return log.some((entry) => entry.result === 'blue' || entry.result === 'red');
+function formatScore(state) {
+  const parts = state.completedSets.map((set) => formatSet(set, 'blue'));
+  if (state.winner === null) parts.push(`${state.games.blue}-${state.games.red}`);
+  return parts.join(', ') + (state.winner !== null ? ' (terminé)' : ' (abandonné)');
+}
+
+/**
+ * Texte complet du journal à envoyer : un en-tête, puis un bloc par match archivé
+ * (titre, puis ses lignes), avec une ligne vide entre chaque.
+ * @param {Archive[]} archives
+ * @param {Date} [now]  date d'envoi (en-tête)
+ * @returns {string}
+ */
+function formatAllLogs(archives, now = new Date()) {
+  const sentAt = now.toLocaleString(LANG, {
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+  const blocks = [`${JOURNAL_TITLE} - ${archives.length} match(s) - envoyé le ${sentAt}`];
+  for (const match of archives) {
+    const blue = match.names.blue || DEFAULT_NAMES.blue;
+    const red = match.names.red || DEFAULT_NAMES.red;
+    const date = new Date(match.log[0].t).toLocaleDateString(LANG);
+    const title = `### ${blue} vs ${red} - ${date} - ${formatScore(match.state)} - ${match.log.length} entrées ###`;
+    blocks.push(title + '\n' + formatLog(match.log));
+  }
+  return blocks.join('\n\n');
+}
+
+/**
+ * Nom du fichier envoyé, daté sans caractère interdit dans un nom de fichier (ni « / » ni « : ») :
+ * journal-score_11-10-2026_18h42.txt
+ * @param {Date} now
+ * @returns {string}
+ */
+function exportFileName(now) {
+  const day = now.toLocaleDateString(LANG).replaceAll('/', '-');
+  const time = now.toLocaleTimeString(LANG, { hour: '2-digit', minute: '2-digit' }).replace(':', 'h');
+  return `journal-score_${day}_${time}.txt`;
+}
+
+/* ---------- Match en cours : état, journal, archives, sauvegarde ---------- */
+
+const STORAGE_KEY = 'padel-score-v1';   // clé de la sauvegarde dans le navigateur
+const LOG_MAX = 2000;      // entrées de journal gardées par match
+const ARCHIVES_MAX = 10;   // matchs gardés dans les archives
+
+/** @typedef {{voice: number, touch: number, voiceUndo: number, touchUndo: number}} Counters */
+/** @typedef {{team: Team, source: 'voice'|'touch', type: EventType}} HistoryEntry */
+
+/** @returns {Counters} */
+const newCounters = () => ({ voice: 0, touch: 0, voiceUndo: 0, touchUndo: 0 });
+
+/** @param {*} a  archive relue depuis la sauvegarde */
+const isValidArchive = (a) => !!(a && a.names && a.state && Array.isArray(a.log) && a.log.length > 0);
+
+/**
+ * Ce que l'écran doit faire après une commande.
+ * @typedef {Object} CommandEffect
+ * @property {'point'|'undo'|'nothing-to-undo'|'refused'} kind
+ * @property {Team} [team]               équipe qui a marqué (kind 'point')
+ * @property {string} [say]              annonce à faire
+ * @property {'point'|'undo'} [beep]     bip à jouer avant l'annonce
+ */
+
+/**
+ * Match en cours : possède les noms, l'historique des points (d'où le score est recalculé),
+ * les compteurs de saisie, le journal et les archives. Il produit et relit aussi la sauvegarde :
+ * le format sauvegardé n'existe qu'ici.
+ */
+function createMatchSession() {
+  let names = { blue: '', red: '' };
+  /** @type {HistoryEntry[]} */
+  let history = [];
+  let state = initialState();
+  let counters = newCounters();
+  /** @type {LogEntry[]} */
+  let log = [];
+  /** @type {Archive[]} */
+  let archives = [];
+
+  return {
+    get names() { return names; },
+    get state() { return state; },
+    get history() { return history; },
+    get counters() { return counters; },
+    get log() { return log; },
+    get archives() { return archives; },
+
+    /** @param {Names} newNames */
+    start(newNames) {
+      names = { blue: newNames.blue || '', red: newNames.red || '' };
+      history = [];
+      state = initialState();
+      counters = newCounters();
+      log = [];
+    },
+
+    /**
+     * Point pour `team`. Renvoie l'événement, ou null si le match est déjà fini.
+     * @param {Team} team
+     * @param {'voice'|'touch'} source
+     * @returns {GameEvent|null}
+     */
+    point(team, source) {
+      if (state.winner) return null;
+      const result = applyPoint(state, team);
+      history.push({ team, source, type: result.event.type });
+      state = result.state;
+      counters[source] += 1;
+      return result.event;
+    },
+
+    /**
+     * Retire le dernier point. Renvoie le point retiré, ou null s'il n'y avait rien à annuler.
+     * @param {'voice'|'touch'} source
+     * @returns {HistoryEntry|null}
+     */
+    undo(source) {
+      counters[source === 'voice' ? 'voiceUndo' : 'touchUndo'] += 1;
+      if (history.length === 0) return null;
+      const undone = history.pop();
+      state = replay(history).state;
+      return undone;
+    },
+
+    /**
+     * Applique une commande (voix ou toucher) : note la ligne de journal, met le score à jour
+     * et dit ce que l'écran doit faire.
+     * @param {Command} cmd
+     * @param {'voice'|'touch'} source
+     * @param {string} text   ce qui a été entendu ('' pour un toucher)
+     * @param {number} now
+     * @returns {CommandEffect}
+     */
+    command(cmd, source, text, now) {
+      const refused = cmd !== 'undo' && !!state.winner;
+      this.addLog({ t: now, src: source, text, result: refused ? 'refused' : cmd });
+      if (refused) return { kind: 'refused' };   // match terminé : seul « annule » reste actif
+      if (cmd === 'undo') {
+        const undone = this.undo(source);
+        if (!undone) return { kind: 'nothing-to-undo', say: 'rien à annuler', beep: 'undo' };
+        return { kind: 'undo', say: undoPhrase(undone.type, state, history.length), beep: 'undo' };
+      }
+      const event = this.point(cmd, source);
+      return { kind: 'point', team: cmd, say: announceEvent(event, state), beep: 'point' };
+    },
+
+    /** @param {LogEntry} entry */
+    addLog(entry) {
+      log.push(entry);
+      if (log.length > LOG_MAX) log.shift();
+    },
+
+    /** Fin du match (Quitter / Nouveau match) : archivé si au moins un point a été marqué. */
+    quit() {
+      if (counters.voice + counters.touch > 0) {
+        archives.push({ names: { ...names }, state, log });
+        if (archives.length > ARCHIVES_MAX) archives.shift();
+      }
+      history = [];
+      state = initialState();
+      counters = newCounters();
+      log = [];
+    },
+
+    /** Données à sauvegarder. @param {string} screen  écran affiché */
+    toSave(screen) {
+      return { screen, names, history, counters, log, archives };
+    },
+
+    /**
+     * Relit une sauvegarde. Renvoie true s'il y a un match en cours à reprendre.
+     * @param {*} data
+     * @returns {boolean}
+     */
+    load(data) {
+      if (!data || typeof data !== 'object') return false;
+      if (data.names) names = { blue: data.names.blue || '', red: data.names.red || '' };
+      log = Array.isArray(data.log) ? data.log : [];
+      archives = Array.isArray(data.archives) ? data.archives.filter(isValidArchive) : [];
+      if (data.screen === 'setup' || !Array.isArray(data.history)) return false;
+      // Le type de chaque point (utile à l'annulation) est recalculé en rejouant le match.
+      state = initialState();
+      history = data.history
+        .filter((h) => h && (h.team === 'blue' || h.team === 'red'))
+        .map((h) => {
+          const result = applyPoint(state, h.team);
+          state = result.state;
+          return { team: h.team, source: h.source === 'voice' ? 'voice' : 'touch', type: result.event.type };
+        });
+      counters = Object.assign(newCounters(), data.counters);
+      return true;
+    },
+  };
 }
 
 /* ---------- Reconnaissance des commandes vocales ---------- */
@@ -426,21 +597,30 @@ const COMMAND_PATTERNS = [
   { cmd: 'undo', re: /\bannule/ },
 ];
 
+/**
+ * Le texte (normalisé) ressemble-t-il à l'écho d'une annonce de l'appli ?
+ * @param {string} n
+ * @returns {boolean}
+ */
+function isAnnouncementEcho(n) {
+  // "point annulé, retour à ..."
+  if (/\bretour a\b/.test(n)) return true;
+  // Annonces contenant une couleur : "jeu bleu", "avantage rouge", "set bleu", "équipe bleue"...
+  return /\b(jeu|jeux|avantage|set|sets|match|equipe)\b/.test(n);
+}
+
 /** Au-delà, la phrase est une conversation (ex. quelqu'un qui explique "il faut dire point bleu") : ignorée. */
 const MAX_COMMAND_WORDS = 3;
 
+/** Mots regardés pour reconnaître un écho d'annonce : la commande et les 2 mots qui la précèdent ("jeu bleu"). */
+const ECHO_CONTEXT_WORDS = 3;
+
 /**
- * Retourne 'blue' | 'red' | 'undo' | null (première commande trouvée dans le texte).
- * @param {string} text
+ * Première commande présente dans un texte déjà normalisé, sans aucun filtre.
+ * @param {string} n
  * @returns {Command|null}
  */
-function detectCommand(text) {
-  const n = normalize(text);
-  if (n.split(' ').length > MAX_COMMAND_WORDS) return null;
-  // Écho de notre propre annonce "point annulé, retour à ..." : à ignorer.
-  if (/\bretour a\b/.test(n)) return null;
-  // Écho de nos annonces contenant une couleur ("jeu bleu", "avantage rouge", "équipe bleue"...) : à ignorer.
-  if (/\b(jeu|jeux|avantage|set|sets|match|equipe)\b/.test(n)) return null;
+function firstCommand(n) {
   let best = null;
   let bestIndex = Infinity;
   for (const { cmd, re } of COMMAND_PATTERNS) {
@@ -453,11 +633,178 @@ function detectCommand(text) {
   return best;
 }
 
+/**
+ * Retourne 'blue' | 'red' | 'undo' | null (première commande trouvée dans le texte).
+ * @param {string} text
+ * @returns {Command|null}
+ */
+function detectCommand(text) {
+  const n = normalize(text);
+  if (n.split(' ').length > MAX_COMMAND_WORDS) return null;
+  if (isAnnouncementEcho(n)) return null;
+  return firstCommand(n);
+}
+
+/** Au-delà de ce nombre de mots sans silence, l'écoute repart de zéro (phrase trop longue). */
+const MAX_PHRASE_WORDS = 10;
+
+/**
+ * Cherche une commande dans les mots NOUVEAUX d'une phrase en cours d'écoute.
+ * Les `from` premiers mots ont déjà été traités (commande prise, ou entendus pendant une annonce) :
+ * on ne les relit pas, ce qui permet de trouver « bleu » au milieu d'une phrase sans le compter deux fois.
+ * Chaque mot est vérifié avec les 2 mots qui le précèdent, pour reconnaître les échos d'annonce ("jeu bleu").
+ * @param {string} text   la phrase entendue jusqu'ici
+ * @param {number} from   nombre de mots déjà traités
+ * @returns {{cmd: Command|null, words: number}}  la commande et le nombre de mots traités après elle
+ */
+function detectInNewWords(text, from) {
+  const words = normalize(text).split(' ').filter(Boolean);
+  for (let k = from; k < words.length; k++) {
+    const cmd = firstCommand(words[k]);
+    if (!cmd) continue;
+    const context = words.slice(Math.max(0, k - ECHO_CONTEXT_WORDS + 1), k + 1).join(' ');
+    if (!isAnnouncementEcho(context)) return { cmd, words: k + 1 };
+  }
+  return { cmd: null, words: words.length };
+}
+
+/** Délai pendant lequel un nouveau résultat peut encore être la suite de la phrase précédente. */
+const PHRASE_CONTINUATION_MS = 1500;
+
+/* ---------- Anti-écho : quand le micro doit-il ignorer ce qu'il entend ? ---------- */
+
+const TAP_DEBOUNCE_MS = 350;   // anti double-tap accidentel sur les zones
+const ECHO_GUARD_MS = 800;     // marge après la fin d'une annonce (écho dans la pièce)
+const SPEECH_MAX_MS = 6000;    // durée max supposée d'une annonce (filet si la fin n'est jamais signalée)
+
+/**
+ * Anti-écho, côté temps : le micro est « sourd » dès qu'une commande est acceptée, pendant toute
+ * l'annonce qui suit, puis ECHO_GUARD_MS après sa fin. Une annonce remplacée par une autre ne
+ * rouvre pas le micro (jeton). L'heure est toujours passée en paramètre.
+ * Côté texte, les échos qui passent malgré tout sont reconnus par isAnnouncementEcho.
+ */
+function createEchoGuard() {
+  let deafUntil = 0;
+  let token = 0;
+  return {
+    /** Commande acceptée : sourd jusqu'à la fin de l'annonce qui va suivre. */
+    hold(now) {
+      token += 1;
+      deafUntil = now + SPEECH_MAX_MS;
+    },
+    /** Une annonce commence. Renvoie le jeton à rendre à sa fin. */
+    speechStarted(now) {
+      token += 1;
+      deafUntil = now + SPEECH_MAX_MS;
+      return token;
+    },
+    /** L'annonce `speechToken` est finie : le micro rouvre après la marge, sauf si une autre a pris sa place. */
+    speechEnded(speechToken, now) {
+      if (speechToken === token) deafUntil = now + ECHO_GUARD_MS;
+    },
+    /** Le micro doit-il ignorer ce qu'il entend en ce moment ? */
+    muted(now) {
+      return now < deafUntil;
+    },
+  };
+}
+
+/**
+ * Ce que l'écoute de phrase décide pour un résultat du micro.
+ * @typedef {Object} HearDecision
+ * @property {'command'|'ignored'|'unknown'|'interim'|'none'} type
+ *   command : nouvelle commande à appliquer · ignored : phrase définitive entendue pendant une annonce ·
+ *   unknown : phrase définitive sans commande · interim : phrase en cours sans commande · none : rien à faire
+ * @property {Command} [cmd]       la commande (type 'command')
+ * @property {boolean} restart     phrase trop longue sans silence : relancer l'écoute tout de suite
+ */
+
+/**
+ * Écoute de phrase : décide, pour chaque résultat du micro, s'il contient une NOUVELLE commande.
+ * Garde en mémoire la phrase en cours et ses mots déjà traités, pour trouver « bleu » au milieu
+ * d'une phrase sans jamais compter deux fois le même mot. Une phrase continue tant qu'un résultat
+ * commence par ses mots déjà traités : sur Android, Chrome renvoie la phrase qui grandit
+ * (« et », « et c'est du », « et c'est du rouge »…) en résultats définitifs successifs.
+ * Après un résultat définitif, la phrase n'est plus continuée au-delà de PHRASE_CONTINUATION_MS :
+ * un « bleu » dit plus tard est une nouvelle commande, même identique.
+ */
+function createPhraseListener() {
+  let words = [];        // phrase en cours (mots normalisés)
+  let consumed = 0;      // nombre de ses mots déjà traités
+  let closedAt = null;   // instant du dernier résultat définitif, ou null si la phrase est en cours
+  const toWords = (text) => normalize(text).split(' ').filter(Boolean);
+
+  return {
+    /** Nouvelle session d'écoute : on oublie la phrase en cours. */
+    reset() {
+      words = [];
+      consumed = 0;
+      closedAt = null;
+    },
+
+    /**
+     * @param {Object} result
+     * @param {string[]} result.transcripts   interprétations du micro, la plus probable en premier
+     * @param {boolean} result.isFinal
+     * @param {boolean} result.muted          l'appli parle (anti-écho) : tout ce qui est entendu est consommé
+     * @param {number} result.now             heure (ms)
+     * @returns {HearDecision}
+     */
+    hear({ transcripts, isFinal, muted, now }) {
+      const heard = toWords(transcripts[0] || '');
+      const continues = consumed > 0
+        && (closedAt === null || now - closedAt <= PHRASE_CONTINUATION_MS)
+        && words.slice(0, consumed).every((w, k) => heard[k] === w);
+      const from = continues ? consumed : 0;
+      words = heard;
+      consumed = from;
+      closedAt = isFinal ? now : null;
+      const restart = !isFinal && heard.length >= MAX_PHRASE_WORDS;
+
+      if (muted) {
+        consumed = heard.length;
+        return { type: isFinal && heard.length > from ? 'ignored' : 'none', restart };
+      }
+      for (const text of transcripts) {
+        const found = detectInNewWords(text, from);
+        if (found.cmd) {
+          words = toWords(text);   // les mots comptés sont ceux de l'interprétation retenue
+          consumed = found.words;
+          return { type: 'command', cmd: found.cmd, restart };
+        }
+      }
+      if (!isFinal) return { type: heard.length > 0 ? 'interim' : 'none', restart };
+      return { type: from === 0 && heard.length > 0 ? 'unknown' : 'none', restart };
+    },
+  };
+}
+
+/* ---------- Relance de l'écoute ---------- */
+
+const SHORT_SESSION_MS = 1500;   // session d'écoute plus courte que ça : compte comme un échec rapide
+const MAX_QUICK_FAILS = 3;       // au-delà d'autant d'échecs rapides de suite, on espace les relances
+const RESTART_DELAY_MS = 250;    // relance normale
+const BACKOFF_DELAY_MS = 3000;   // relance espacée (le micro échoue en boucle)
+
+/**
+ * Délai avant de relancer une écoute que le navigateur a coupée.
+ * @param {number} sessionMs     durée de la session qui vient de se terminer
+ * @param {number} quickFails    échecs rapides de suite jusqu'ici
+ * @returns {{delay: number, quickFails: number}}
+ */
+function restartPlan(sessionMs, quickFails) {
+  const fails = sessionMs < SHORT_SESSION_MS ? quickFails + 1 : 0;
+  return { delay: fails > MAX_QUICK_FAILS ? BACKOFF_DELAY_MS : RESTART_DELAY_MS, quickFails: fails };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     initialState, applyPoint, replay, numberFr, gamePointsPhrase, tiebreakPhrase,
-    gamesPhrase, setsPhrase, announceEvent, undoPhrase, displayPoints, formatSet,
-    normalize, detectCommand, formatLog, formatScore, formatAllLogs, isWorthArchiving,
+    gamesPhrase, setsPhrase, announceEvent, undoPhrase, scorePhrase, displayPoints, formatSet,
+    normalize, isAnnouncementEcho, detectCommand, detectInNewWords, createPhraseListener, createEchoGuard,
+    MAX_PHRASE_WORDS, PHRASE_CONTINUATION_MS, ECHO_GUARD_MS, SPEECH_MAX_MS, TAP_DEBOUNCE_MS, STORAGE_KEY,
+    restartPlan, RESTART_DELAY_MS, BACKOFF_DELAY_MS,
+    formatLog, formatScore, formatAllLogs, exportFileName, createMatchSession, LOG_MAX, ARCHIVES_MAX,
   };
 }
 
@@ -467,28 +814,16 @@ if (typeof module !== 'undefined' && module.exports) {
 
 if (typeof document !== 'undefined') {
   (function () {
-    const STORAGE_KEY = 'padel-score-v1';
-    const ECHO_GUARD_MS = 800;   // ignorer le micro juste après une annonce (anti-écho)
-    const TAP_DEBOUNCE_MS = 350; // anti double-tap accidentel
     const ANNOUNCE_DELAY_MS = 180; // le bip passe avant l'annonce
-    const SPEECH_MAX_MS = 6000;    // durée max supposée d'une annonce
-    const LANG = 'fr-FR';
-    const LOG_MAX = 1999;
-    const ARCHIVES_MAX = 10;
+    const SAVE_DELAY_MS = 1000;      // les lignes de journal sont sauvegardées par paquets
+    const HEARD_DISPLAY_MS = 6000;   // durée d'affichage de « Entendu : … »
+    const FLASH_MS = 180;            // éclair de la zone qui marque
+    const BUTTON_MESSAGE_MS = 1000;  // message temporaire sur le bouton d'envoi
 
     const $ = (id) => document.getElementById(id);
 
-    const app = {
-      screen: 'setup',
-      names: { blue: '', red: '' },
-      history: [],   // [{ team, source, type }]
-      state: initialState(),
-      counters: { voice: 0, touch: 0, voiceUndo: 0, touchUndo: 0 },
-      /** @type {LogEntry[]} */
-      log: [],
-      /** @type {Archive[]} */
-      archives: [],
-    };
+    const session = createMatchSession();
+    let screen = 'setup';   // écran affiché : 'setup' | 'game' | 'end'
 
     /* ---------- Son de confirmation ---------- */
 
@@ -529,63 +864,64 @@ if (typeof document !== 'undefined') {
 
     /* ---------- Synthèse vocale ---------- */
 
+    const echo = createEchoGuard();
+
     const Speaker = {
       supported: 'speechSynthesis' in window,
       voice: null,
       utterance: null,  // référence gardée : évite que Chrome perde l'événement onend
-      busyUntil: 0,     // micro ignoré jusqu'à cet instant (anti-écho / anti-doublon)
-      token: 0,
       init() {
         if (!this.supported) return;
         const pick = () => {
           const voices = window.speechSynthesis.getVoices();
-          this.voice = voices.find((v) => v.lang === 'fr-FR')
+          this.voice = voices.find((v) => v.lang === LANG)
             || voices.find((v) => v.lang && v.lang.toLowerCase().startsWith('fr'))
             || null;
         };
         pick();
         window.speechSynthesis.addEventListener('voiceschanged', pick);
       },
-      /** Bloque le micro dès qu'une commande est acceptée, avant même l'annonce. */
-      hold() {
-        this.token += 1;
-        this.busyUntil = Date.now() + SPEECH_MAX_MS;
-      },
       say(text) {
-        const token = ++this.token;
-        const done = () => {
-          if (token === this.token) this.busyUntil = Date.now() + ECHO_GUARD_MS;
-        };
+        const token = echo.speechStarted(Date.now());
+        const done = () => echo.speechEnded(token, Date.now());
         if (!this.supported || !text) { done(); return; }
         const synth = window.speechSynthesis;
         synth.cancel();
         const u = new SpeechSynthesisUtterance(text);
-        u.lang = 'fr-FR';
+        u.lang = LANG;
         if (this.voice) u.voice = this.voice;
         u.rate = 1.05;
         u.onend = done;
         u.onerror = done;
         this.utterance = u;
-        // Filet de sécurité si onend ne se déclenche jamais.
-        this.busyUntil = Date.now() + SPEECH_MAX_MS;
         synth.speak(u);
-      },
-      busy() {
-        return Date.now() < this.busyUntil;
       },
     };
 
     /* ---------- Reconnaissance vocale ---------- */
 
+    /**
+     * Événement envoyé par la reconnaissance vocale à l'appli (un seul écouteur, voir onVoiceEvent) :
+     *   { type: 'status', state, detail }   état du micro (listening, restarting, off, unavailable, denied)
+     *   { type: 'mode' }                     mode local / en ligne changé (lire Voice.mode / localStatus)
+     *   { type: 'log', src, text, result }   ligne de journal (src 'mic' par défaut, ou 'voice')
+     *   { type: 'heard', text, note }        texte entendu à montrer
+     *   { type: 'command', cmd, text }       commande à appliquer
+     * @typedef {Object} VoiceEvent
+     */
+
     const Voice = {
       SR: window.SpeechRecognition || window.webkitSpeechRecognition || null,
       rec: null,
+      /** @type {(event: VoiceEvent) => void} */
+      emit: () => {},
       wanted: false,
       blocked: false,   // permission refusée / pas de micro : on n'insiste plus
       startedAt: 0,
       quickFails: 0,
       restartTimer: null,
-      handled: new Set(),   // numéros des résultats déjà transformés en commande (session en cours)
+      quickRestart: false,   // relance immédiate demandée (phrase trop longue)
+      listener: createPhraseListener(),
       // Reconnaissance sur l'appareil (Chrome récent) : 'local' si active, sinon 'cloud'.
       mode: 'cloud',
       // available | downloadable | downloading | unavailable | unsupported | unknown
@@ -603,7 +939,7 @@ if (typeof document !== 'undefined') {
       async checkLocal() {
         if (!this.localSupported) {
           this.localStatus = 'unsupported';
-          renderVoiceMode();
+          this.emit({ type: 'mode' });
           return;
         }
         try {
@@ -611,38 +947,51 @@ if (typeof document !== 'undefined') {
         } catch (e) {
           this.localStatus = 'unavailable';
         }
-        if (this.localStatus === 'available') this.setMode('local');
-        renderVoiceMode();
+        if (this.localStatus === 'available') this.useLocal();
+        this.emit({ type: 'mode' });
       },
 
       /** Télécharge le français pour l'appareil. Doit être appelé pendant un geste utilisateur. */
       installLocal() {
         if (!this.localSupported || this.localStatus !== 'downloadable') return;
         this.localStatus = 'downloading';
-        renderVoiceMode();
+        this.emit({ type: 'mode' });
         this.SR.install({ langs: [LANG], processLocally: true })
           .then((ok) => {
             this.localStatus = ok ? 'available' : 'unavailable';
-            if (ok) this.setMode('local');
+            if (ok) this.useLocal();
           })
           .catch(() => { this.localStatus = 'unavailable'; })
-          .then(() => renderVoiceMode());
+          .then(() => this.emit({ type: 'mode' }));
       },
 
-      setMode(mode) {
-        if (!this.rec || this.mode === mode) return;
-        this.mode = mode;
-        this.rec.processLocally = mode === 'local';
-        renderVoiceMode();
+      /**
+       * Passe à la reconnaissance sur le téléphone. Il n'y a pas de chemin inverse : une fois le
+       * mode local en place, l'appli ne repasse jamais par le service en ligne.
+       */
+      useLocal() {
+        if (!this.rec || this.mode === 'local') return;
+        this.mode = 'local';
+        this.rec.processLocally = true;
+        this.emit({ type: 'mode' });
         // Relance pour appliquer le nouveau mode tout de suite (onend redémarre l'écoute).
         if (this.wanted) {
           try { this.rec.abort(); } catch (e) { /* ignore */ }
         }
       },
 
-      init() {
+      /** Arrête le vocal pour de bon (micro refusé, absent, ou mode local en échec). */
+      block(detail) {
+        this.blocked = true;
+        this.wanted = false;
+        this.emit({ type: 'status', state: 'denied', detail });
+      },
+
+      /** @param {(event: VoiceEvent) => void} onEvent */
+      init(onEvent) {
+        this.emit = onEvent;
         if (!this.SR) {
-          setMicStatus('unavailable');
+          this.emit({ type: 'status', state: 'unavailable' });
           return;
         }
         const rec = new this.SR();
@@ -654,91 +1003,91 @@ if (typeof document !== 'undefined') {
 
         rec.onstart = () => {
           this.startedAt = Date.now();
-          this.handled.clear();   // les numéros de résultats repartent de 0 à chaque session d'écoute
-          setMicStatus('listening');
-          addLog('mic', this.mode, 'start');
-        };
-
-        /** Première commande trouvée parmi les interprétations du micro. */
-        const detectAny = (transcripts) => {
-          for (const t of transcripts) {
-            const cmd = detectCommand(t);
-            if (cmd) return cmd;
-          }
-          return null;
+          this.listener.reset();   // nouvelle session d'écoute : nouvelle phrase
+          this.emit({ type: 'status', state: 'listening' });
+          this.emit({ type: 'log', text: this.mode, result: 'start' });
         };
 
         rec.onresult = (e) => {
           for (let i = e.resultIndex; i < e.results.length; i++) {
             const result = e.results[i];
-            // Commande déjà prise sur une version provisoire de cette phrase : on ne la compte pas deux fois.
-            if (this.handled.has(i)) continue;
             const transcripts = Array.from(result, (alt) => alt.transcript);
-            const transcript = transcripts[0];
             const heard = transcripts.join(' / ');
-
-            if (!result.isFinal) {
-              // Phrase pas encore finie : on agit tout de suite si elle contient déjà une commande.
-              if (Speaker.busy()) continue;
-              const cmd = detectAny(transcripts);
-              if (!cmd) {
-                showHeard(transcript, '…');   // montre aux joueurs que l'appli les entend
-                continue;
-              }
-              this.handled.add(i);
-              addLog('voice', heard + ' [provisoire]', cmd);
-              showHeard(transcript, null);
-              handleCommand(cmd, 'voice');
-              continue;
+            const decision = this.listener.hear({
+              transcripts, isFinal: result.isFinal, muted: echo.muted(Date.now()), now: Date.now(),
+            });
+            switch (decision.type) {
+              case 'command':
+                this.emit({ type: 'heard', text: transcripts[0], note: null });
+                this.emit({ type: 'command', cmd: decision.cmd, text: heard + (result.isFinal ? '' : ' [provisoire]') });
+                break;
+              case 'ignored':
+                this.emit({ type: 'log', src: 'voice', text: heard, result: 'ignored' });
+                this.emit({ type: 'heard', text: transcripts[0], note: 'ignoré pendant l\'annonce' });
+                break;
+              case 'unknown':
+                this.emit({ type: 'log', src: 'voice', text: heard, result: 'unknown' });
+                this.emit({ type: 'heard', text: transcripts[0], note: 'non reconnu' });
+                break;
+              case 'interim':
+                this.emit({ type: 'heard', text: transcripts[0], note: '…' });   // l'appli montre qu'elle entend
+                break;
+              default: break;
             }
-
-            if (Speaker.busy()) {
-              addLog('voice', heard, 'ignored');
-              showHeard(transcript, 'ignoré pendant l\'annonce');
-              continue;
+            // Phrase trop longue sans silence : on efface tout et on repart de zéro tout de suite.
+            if (decision.restart) {
+              this.restartNow();
+              break;
             }
-
-            const cmd = detectAny(transcripts);
-            addLog('voice', heard, cmd || 'unknown');
-            showHeard(transcript, cmd ? null : 'non reconnu');
-            if (cmd) handleCommand(cmd, 'voice');
           }
         };
 
         rec.onerror = (e) => {
-          if (this.wanted) addLog('mic', e.message || '', 'error:' + e.error);
-          // Échec du mode « sur l'appareil » : on revient au service en ligne sans bloquer le vocal.
+          if (this.wanted) this.emit({ type: 'log', text: e.message || '', result: 'error:' + e.error });
+          // Échec du mode « sur l'appareil » : on ne repasse PAS par les serveurs de Google
+          // (lent et dépendant du réseau) ; le vocal s'arrête et le match continue au toucher.
           if (this.mode === 'local'
             && (e.error === 'language-not-supported' || e.error === 'service-not-allowed')) {
             this.localStatus = 'unavailable';
-            this.setMode('cloud');
+            this.block('local-failed');
             return;
           }
           if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
-            this.blocked = true;
-            this.wanted = false;
-            setMicStatus('denied', e.error);
+            this.block(e.error);
           }
           // Autres erreurs (no-speech, network, aborted...) : onend relancera.
         };
 
         rec.onend = () => {
           if (!this.wanted || this.blocked) {
-            if (!this.blocked) setMicStatus('off');
+            if (!this.blocked) this.emit({ type: 'status', state: 'off' });
             return;
           }
-          addLog('mic', this.mode, 'end');
+          if (this.quickRestart) {
+            // Relance demandée par l'appli (phrase trop longue) : immédiate, sans compter comme un échec.
+            this.quickRestart = false;
+            this.emit({ type: 'log', text: this.mode, result: 'reset' });
+            this.start();
+            return;
+          }
+          this.emit({ type: 'log', text: this.mode, result: 'end' });
           // Session coupée par le navigateur : on relance automatiquement.
-          const shortLived = Date.now() - this.startedAt < 1500;
-          this.quickFails = shortLived ? this.quickFails + 1 : 0;
-          const delay = this.quickFails > 3 ? 3000 : 250;
-          setMicStatus('restarting');
+          const plan = restartPlan(Date.now() - this.startedAt, this.quickFails);
+          this.quickFails = plan.quickFails;
+          this.emit({ type: 'status', state: 'restarting' });
           clearTimeout(this.restartTimer);
-          this.restartTimer = setTimeout(() => this.start(), delay);
+          this.restartTimer = setTimeout(() => this.start(), plan.delay);
         };
 
         this.rec = rec;
         this.checkLocal();
+      },
+
+      /** Efface la phrase en cours et repart de zéro (relance immédiate de l'écoute). */
+      restartNow() {
+        if (!this.rec || this.quickRestart) return;
+        this.quickRestart = true;
+        try { this.rec.abort(); } catch (e) { this.quickRestart = false; }
       },
 
       start() {
@@ -757,7 +1106,7 @@ if (typeof document !== 'undefined') {
         if (this.rec) {
           try { this.rec.abort(); } catch (e) { /* ignore */ }
         }
-        if (!this.blocked && this.available) setMicStatus('off');
+        if (!this.blocked && this.available) this.emit({ type: 'status', state: 'off' });
       },
     };
 
@@ -797,7 +1146,10 @@ if (typeof document !== 'undefined') {
           break;
         case 'denied':
           text.textContent = 'Micro bloqué';
-          warn.textContent = detail === 'audio-capture'
+          warn.textContent = detail === 'local-failed'
+            ? 'La reconnaissance vocale sur le téléphone a échoué : utilisez les zones tactiles '
+              + '(rechargez la page pour réessayer).'
+            : detail === 'audio-capture'
             ? 'Aucun micro détecté : utilisez les zones tactiles.'
             : 'Accès au micro refusé : utilisez les zones tactiles. '
               + 'Pour réactiver le vocal, autorisez le micro pour ce site puis rechargez la page.';
@@ -830,20 +1182,35 @@ if (typeof document !== 'undefined') {
       $('mic-mode').textContent = Voice.mode === 'local' ? 'sur le téléphone' : 'en ligne';
     }
 
+    /**
+     * Seul point d'entrée des événements de la reconnaissance vocale dans l'appli.
+     * @param {VoiceEvent} event
+     */
+    function onVoiceEvent(event) {
+      switch (event.type) {
+        case 'status': setMicStatus(event.state, event.detail); break;
+        case 'mode': renderVoiceMode(); break;
+        case 'log': addLog(event.src || 'mic', event.text, event.result); break;
+        case 'heard': showHeard(event.text, event.note); break;
+        case 'command': handleCommand(event.cmd, 'voice', event.text); break;
+        default: break;
+      }
+    }
+
     let heardTimer = null;
     function showHeard(transcript, note) {
       const el = $('heard');
       el.textContent = 'Entendu : « ' + transcript.trim() + ' »' + (note ? ' — ' + note : '');
       clearTimeout(heardTimer);
-      heardTimer = setTimeout(() => { el.textContent = ''; }, 6000);
+      heardTimer = setTimeout(() => { el.textContent = ''; }, HEARD_DISPLAY_MS);
     }
 
     function teamName(team) {
-      return app.names[team] || (team === 'blue' ? 'Bleu' : 'Rouge');
+      return session.names[team] || DEFAULT_NAMES[team];
     }
 
     function showScreen(name) {
-      app.screen = name;
+      screen = name;
       $('screen-setup').hidden = name !== 'setup';
       $('screen-game').hidden = name !== 'game';
       $('screen-end').hidden = name !== 'end';
@@ -851,7 +1218,7 @@ if (typeof document !== 'undefined') {
     }
 
     function render() {
-      const s = app.state;
+      const s = session.state;
       const pts = displayPoints(s);
       for (const team of ['blue', 'red']) {
         $('label-' + team).textContent = teamName(team);
@@ -865,7 +1232,7 @@ if (typeof document !== 'undefined') {
     }
 
     function renderEnd() {
-      const s = app.state;
+      const s = session.state;
       const w = s.winner;
       const winnerEl = $('winner-name');
       winnerEl.textContent = teamName(w);
@@ -900,7 +1267,7 @@ if (typeof document !== 'undefined') {
         }
       }
 
-      const c = app.counters;
+      const c = session.counters;
       $('end-stats').textContent = 'Saisie : ' + c.voice + ' point(s) à la voix, '
         + c.touch + ' au tactile · Annulations : ' + (c.voiceUndo + c.touchUndo)
         + ' (' + c.voiceUndo + ' à la voix, ' + c.touchUndo + ' au tactile)';
@@ -909,61 +1276,39 @@ if (typeof document !== 'undefined') {
     function flashZone(team) {
       const el = $('zone-' + team);
       el.classList.add('flash');
-      setTimeout(() => el.classList.remove('flash'), 180);
+      setTimeout(() => el.classList.remove('flash'), FLASH_MS);
     }
 
     function announce(text, kind) {
-      Speaker.hold();
+      echo.hold(Date.now());   // micro sourd dès maintenant, avant même le bip
       Beep.play(kind);
       setTimeout(() => Speaker.say(text), ANNOUNCE_DELAY_MS);
     }
 
     /* ---------- Actions ---------- */
 
-    function handleCommand(cmd, source) {
-      if (app.screen === 'setup') return;
-      if (source === 'touch') addLog('touch', '', cmd);
-      if (cmd === 'undo') undo(source);
-      else scorePoint(cmd, source);
-    }
-
-    function scorePoint(team, source) {
-      if (app.state.winner) return; // match terminé : seul "annule" reste actif
-      const { state, event } = applyPoint(app.state, team);
-      app.history.push({ team, source, type: event.type });
-      app.state = state;
-      app.counters[source] += 1;
-      render();
-      flashZone(team);
-      announce(announceEvent(event, state), 'point');
+    /**
+     * Seule entrée pour une commande, à la voix comme au toucher.
+     * @param {Command} cmd
+     * @param {'voice'|'touch'} source
+     * @param {string} [text]  ce qui a été entendu (voix)
+     */
+    function handleCommand(cmd, source, text = '') {
+      if (screen === 'setup') return;
+      const effect = session.command(cmd, source, text, Date.now());
+      if (effect.kind === 'point' || effect.kind === 'undo') render();
+      if (effect.kind === 'point') flashZone(effect.team);
+      if (effect.say) announce(effect.say, effect.beep);
       save();
-      if (state.winner) showScreen('end');
-    }
-
-    function undo(source) {
-      app.counters[source === 'voice' ? 'voiceUndo' : 'touchUndo'] += 1;
-      if (app.history.length === 0) {
-        announce('rien à annuler', 'undo');
-        save();
-        return;
-      }
-      const undone = app.history.pop();
-      app.state = replay(app.history).state;
-      render();
-      if (app.screen === 'end') showScreen('game');
-      announce(undoPhrase(undone.type, app.state, app.history.length), 'undo');
-      save();
+      const next = session.state.winner ? 'end' : 'game';
+      if (next !== screen) showScreen(next);
     }
 
     function startMatch() {
-      app.names = {
+      session.start({
         blue: $('name-blue').value.trim(),
         red: $('name-red').value.trim(),
-      };
-      app.history = [];
-      app.state = initialState();
-      app.counters = { voice: 0, touch: 0, voiceUndo: 0, touchUndo: 0 };
-      app.log = [];
+      });
       render();
       showScreen('game');
       save();
@@ -972,22 +1317,11 @@ if (typeof document !== 'undefined') {
     }
 
     function backToSetup() {
-      if (isWorthArchiving(app.log)) {
-        const archive = {
-          names: app.names,
-          state: app.state,
-          log: app.log,
-        };
-        app.archives.push(archive);
-        if (app.archives.length > ARCHIVES_MAX) app.archives.shift();
-      }
-      app.log = [];
+      session.quit();
       Voice.stop();
-      Speaker.supported && window.speechSynthesis.cancel();
-      app.history = [];
-      app.state = initialState();
-      $('name-blue').value = app.names.blue;
-      $('name-red').value = app.names.red;
+      if (Speaker.supported) window.speechSynthesis.cancel();
+      $('name-blue').value = session.names.blue;
+      $('name-red').value = session.names.red;
       showScreen('setup');
       updateShareButton();
       save();
@@ -995,59 +1329,69 @@ if (typeof document !== 'undefined') {
 
     function updateShareButton() {
       const button = $('btn-share-logs');
-      button.hidden = (app.archives.length === 0);
+      button.hidden = (session.archives.length === 0);
     }
 
+    /** Affiche un message temporaire sur le bouton d'envoi, puis remet son texte d'origine (celui du HTML). */
+    let shareLabel = null;
     function flashButton(message) {
       const button = $('btn-share-logs');
+      if (shareLabel === null) shareLabel = button.textContent;
       button.textContent = message;
-      setTimeout(() => button.textContent = 'Envoyer les Logs', 1000);
+      setTimeout(() => { button.textContent = shareLabel; }, BUTTON_MESSAGE_MS);
     }
 
+    /** Envoie le journal de tous les matchs archivés : partage de fichier, ou copie en secours. */
     async function shareLogs() {
-
-      const allLogs = formatAllLogs(app.archives);
-
-      // 2. Le nom du fichier, avec la date et l'heure d'envoi : journal-padel_11-10-2026_18h42.txt
       const now = new Date();
-      const day = now.toLocaleDateString('fr-FR').replaceAll('/', '-');
-      const time = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }).replace(':', 'h');
-      const fileName = `journal-score_${day}_${time}.txt`;
-      const file = new File(
-          [allLogs],
-          fileName,
-          { type: "text/plain" }
-      );
-
-      const shareData = { files: [file], title: 'Journal Score' };
+      const text = formatAllLogs(session.archives, now);
+      const file = new File([text], exportFileName(now), { type: 'text/plain' });
+      const shareData = { files: [file], title: JOURNAL_TITLE };
       const canShareFile = navigator.canShare && navigator.canShare(shareData);
 
       try {
-        if (canShareFile){
-          await navigator.share(shareData)
+        if (canShareFile) {
+          await navigator.share(shareData);
         } else {
-          await navigator.clipboard.writeText(allLogs)
+          await navigator.clipboard.writeText(text);
           flashButton('Copié ✓');
         }
       } catch (e) {
-        if (e.name === 'AbortError') return;
+        if (e.name === 'AbortError') return;   // menu de partage fermé : pas une erreur
         flashButton('Envoi impossible');
       }
     }
 
     /* ---------- Sauvegarde locale (survit à un rechargement) ---------- */
 
+    /** Stockage dans le navigateur (seul adapter aujourd'hui ; les tests unitaires passent par session.toSave/load). */
+    const storage = {
+      read() {
+        try {
+          return JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
+        } catch (e) {
+          return null;
+        }
+      },
+      write(data) {
+        try {
+          localStorage.setItem(STORAGE_KEY, JSON.stringify(data));
+        } catch (e) { /* stockage indisponible : sans conséquence */ }
+      },
+    };
+
+    let saveTimer = null;
+
+    /** Sauvegarde tout de suite (score, changement d'écran). */
     function save() {
-      try {
-        localStorage.setItem(STORAGE_KEY, JSON.stringify({
-          screen: app.screen,
-          names: app.names,
-          history: app.history,
-          counters: app.counters,
-          log: app.log,
-          archives: app.archives,
-        }));
-      } catch (e) { /* stockage indisponible : sans conséquence */ }
+      clearTimeout(saveTimer);
+      saveTimer = null;
+      storage.write(session.toSave(screen));
+    }
+
+    /** Sauvegarde un peu plus tard, une seule fois pour plusieurs lignes de journal. */
+    function saveSoon() {
+      if (!saveTimer) saveTimer = setTimeout(save, SAVE_DELAY_MS);
     }
 
     /**
@@ -1056,31 +1400,19 @@ if (typeof document !== 'undefined') {
      * @param {string} result
      */
     function addLog(src, text, result) {
-      if (app.log.length > LOG_MAX) app.log.shift();
-      const newLog = {t: Date.now(), src, text, result};
-      app.log.push(newLog);
-      save();
+      session.addLog({ t: Date.now(), src, text, result });
+      saveSoon();
     }
 
+    /** Relit la sauvegarde. Renvoie true s'il y a un match en cours à reprendre. */
     function restore() {
-      try {
-        const data = JSON.parse(localStorage.getItem(STORAGE_KEY) || 'null');
-        if (!data) return false;
-        app.names = data.names || app.names;
-        $('name-blue').value = app.names.blue || '';
-        $('name-red').value = app.names.red || '';
-        app.log = data.log || [];
-        app.archives = data.archives || [];
-        if (data.screen === 'setup' || !Array.isArray(data.history)) return false;
-        app.history = data.history.filter((h) => h && (h.team === 'blue' || h.team === 'red'));
-        app.counters = Object.assign(app.counters, data.counters);
-        app.state = replay(app.history).state;
-        render();
-        showScreen(app.state.winner ? 'end' : 'game');
-        return true;
-      } catch (e) {
-        return false;
-      }
+      const resume = session.load(storage.read());
+      $('name-blue').value = session.names.blue;
+      $('name-red').value = session.names.red;
+      if (!resume) return false;
+      render();
+      showScreen(session.state.winner ? 'end' : 'game');
+      return true;
     }
 
     /* ---------- Initialisation ---------- */
@@ -1090,7 +1422,7 @@ if (typeof document !== 'undefined') {
       if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
       Speaker.init();
-      Voice.init();
+      Voice.init(onVoiceEvent);
 
       if (!Voice.available) {
         const w = $('setup-warning');
@@ -1132,10 +1464,13 @@ if (typeof document !== 'undefined') {
       $('btn-share-logs').addEventListener('click', shareLogs);
 
       document.addEventListener('visibilitychange', () => {
-        if (app.screen === 'setup') return;
+        if (screen === 'setup') return;
         // Écran verrouillé / appli en arrière-plan : utile pour expliquer une coupure du micro
         addLog('app', '', document.visibilityState);
-        if (document.visibilityState !== 'visible') return;
+        if (document.visibilityState !== 'visible') {
+          save();   // l'appli peut être fermée en arrière-plan : on ne garde rien en attente
+          return;
+        }
         ScreenLock.request();
         if (Voice.wanted) Voice.start();
       });
@@ -1149,13 +1484,7 @@ if (typeof document !== 'undefined') {
           overlay.hidden = true;
           Beep.unlock();
           Voice.start();
-          const s = app.state;
-          if (!s.winner) {
-            const text = s.tiebreak
-              ? 'jeu décisif, ' + tiebreakPhrase(s.points)
-              : gamePointsPhrase(s.points) + ', ' + gamesPhrase(s.games);
-            announce('reprise, ' + text, 'point');
-          }
+          if (!session.state.winner) announce('reprise, ' + scorePhrase(session.state, true), 'point');
         }, { once: true });
       }
     }

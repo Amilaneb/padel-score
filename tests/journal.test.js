@@ -4,9 +4,10 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { replay, formatScore, formatLog, formatAllLogs, isWorthArchiving } = require('../app.js');
+const { replay, formatScore, formatLog, formatAllLogs, exportFileName } = require('../app.js');
 
-const games = (team, n) => Array(4 * n).fill(team);
+const { games } = require('./helpers');
+
 const T0 = new Date(2026, 9, 10, 14, 2, 11).getTime();   // 10/10/2026 14:02:11, heure locale
 
 const entry = (secondsAfterStart, src, result, text = '') =>
@@ -52,7 +53,7 @@ test('formatLog : une ligne par entrée, colonnes séparées par des tabulations
 
 test('formatAllLogs : sans archive, seulement l\'en-tête', () => {
   const text = formatAllLogs([]);
-  assert.match(text, /^Journal App - 0 match\(s\) - envoyé le \d\d\/\d\d\/\d{4} \d\d:\d\d$/);
+  assert.match(text, /^Journal Score - 0 match\(s\) - envoyé le \d\d\/\d\d\/\d{4} \d\d:\d\d$/);
 });
 
 test('formatAllLogs : un titre par match, noms par défaut si vides', () => {
@@ -63,7 +64,7 @@ test('formatAllLogs : un titre par match, noms par défaut si vides', () => {
   const blocks = formatAllLogs(archives).split('\n\n');
 
   assert.equal(blocks.length, 3);
-  assert.match(blocks[0], /^Journal App - 2 match\(s\)/);
+  assert.match(blocks[0], /^Journal Score - 2 match\(s\)/);
   assert.equal(blocks[1].split('\n')[0], '### Papa vs Marc - 10/10/2026 - 1-0 (abandonné) - 1 entrées ###');
   assert.equal(blocks[2].split('\n')[0], '### Bleu vs Rouge - 10/10/2026 - 0-0 (abandonné) - 2 entrées ###');
   assert.equal(blocks[2].split('\n').length, 3);   // titre + 2 lignes
@@ -80,10 +81,11 @@ test('formatAllLogs : aucune cellule ne commence par "=" (pris pour une formule 
   }
 });
 
-test('isWorthArchiving : seulement si au moins un point a été marqué', () => {
-  assert.equal(isWorthArchiving([]), false);
-  assert.equal(isWorthArchiving([entry(0, 'touch', 'undo'), entry(2, 'voice', 'unknown', 'début du match')]), false);
-  assert.equal(isWorthArchiving([entry(0, 'mic', 'error:network')]), false);
-  assert.equal(isWorthArchiving([entry(0, 'voice', 'red', 'point rouge')]), true);
-  assert.equal(isWorthArchiving([entry(0, 'touch', 'blue'), entry(1, 'touch', 'undo')]), true);
+test('formatAllLogs : en-tête exact avec la date d\'envoi', () => {
+  const sentAt = new Date(2026, 10, 15, 9, 5);   // 15/11/2026 09:05, heure locale
+  assert.equal(formatAllLogs([], sentAt), 'Journal Score - 0 match(s) - envoyé le 15/11/2026 09:05');
+});
+
+test('exportFileName : daté, sans « / » ni « : »', () => {
+  assert.equal(exportFileName(new Date(2026, 9, 11, 18, 42)), 'journal-score_11-10-2026_18h42.txt');
 });

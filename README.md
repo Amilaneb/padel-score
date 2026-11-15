@@ -56,6 +56,18 @@ ambiguïté puisque l'application ne suit pas le service.
 | Match | « match gagné, équipe bleue » |
 | Annulation | « point annulé, retour à trente quinze » (+ jeux si l'annulation traverse un jeu) |
 
+### Organisation du code
+
+`app.js` a deux parties :
+
+1. **Moteur (pur, testé sous Node)** : règles du score (`applyPoint`, `replay`), textes et annonces,
+   détection des commandes (`detectCommand`, `detectInNewWords`), **écoute de phrase**
+   (`createPhraseListener` : décide pour chaque résultat du micro s'il contient une nouvelle commande),
+   **anti-écho** (`createEchoGuard`), **match en cours** (`createMatchSession` : état, journal,
+   archives, format de sauvegarde, `command()` pour la voix comme pour le toucher), export du journal.
+2. **Application (navigateur)** : écran, bip, voix de synthèse, reconnaissance vocale (`Voice`, qui
+   envoie des événements à `onVoiceEvent`), sauvegarde dans le `localStorage`, partage du journal.
+
 ### Détails de comportement
 
 - **Anti-écho** : le micro ignore ce qu'il entend pendant l'annonce et 0,8 s après, pour que
@@ -63,12 +75,18 @@ ambiguïté puisque l'application ne suit pas le service.
   le même point en même temps. Pour enchaîner plusieurs « annule », attendre la fin de chaque annonce.
   Par sécurité, une phrase contenant un mot des annonces (« jeu », « avantage », « set », « match »,
   « équipe ») n'est jamais prise pour une commande, même si elle contient « bleu » ou « rouge ».
-- **Phrases courtes uniquement** : une phrase de plus de 3 mots est ignorée (conversation entre
-  joueurs, pas une commande).
+- **Commande au milieu d'une phrase** : « bleu », « rouge » ou « annule » est pris dès qu'il est
+  entendu, même au milieu d'une phrase (« et c'est du rouge »), sans attendre la fin de la phrase.
+  Les mots déjà traités ne sont pas relus, pour ne jamais compter deux fois le même point.
+- **Phrase trop longue** : au-delà de 10 mots sans silence, l'écoute repart de zéro immédiatement.
+- **Même commande deux fois** : un « bleu » dit plus de 1,5 s après la fin de la phrase précédente
+  est une nouvelle commande, même si la phrase est identique.
+- **Archives** : un match est archivé (10 au maximum) dès qu'au moins un point a été marqué.
 - **Reconnaissance sur le téléphone** : si Chrome sait reconnaître le français directement sur
   l'appareil (API `processLocally`, Chrome récent), l'application l'utilise ; si le pack de langue est
-  téléchargeable, il est téléchargé au démarrage du match. Sinon, ou en cas d'erreur, elle utilise
-  le service en ligne habituel. Le mode utilisé est affiché sur l'écran d'accueil et en bas de l'écran
+  téléchargeable, il est téléchargé au démarrage du match. Une fois ce mode en place, l'application
+  ne passe plus jamais par le service en ligne : en cas d'erreur, le vocal s'arrête et le match
+  continue au toucher. Si le téléphone ne propose pas ce mode, elle utilise le service en ligne. Le mode utilisé est affiché sur l'écran d'accueil et en bas de l'écran
   de jeu (« Vocal : sur le téléphone / en ligne »). Objectif : éviter le bip système d'Android à
   chaque relance du micro, émis par le service de reconnaissance en ligne. À ce jour, Chrome Android
   répond généralement « indisponible » : ce mode concerne surtout Chrome ordinateur pour l'instant.
@@ -109,15 +127,26 @@ sécurisée, donc le micro y sera bloqué. Utiliser le débogage à distance de 
 
 ## Tests
 
-Tests unitaires du moteur (règles du score, textes annoncés, reconnaissance des commandes, journal),
-avec le testeur intégré à Node (18 ou plus) — rien à installer :
+Tests unitaires de la partie 1 de `app.js`, avec le testeur intégré à Node (18 ou plus) — rien à
+installer :
 
 ```bash
-node --test
+npm test
 ```
 
-Les fichiers sont dans `tests/`. Ils testent les fonctions de la partie 1 de `app.js`, exportées
-par `module.exports`.
+| Fichier | Ce qu'il teste |
+|---|---|
+| `tests/score.test.js` | règles du padel (points, jeux, sets, tie-break, annulation) |
+| `tests/texts.test.js` | annonces et affichage du score |
+| `tests/commands.test.js` | reconnaissance de « bleu / rouge / annule », échos d'annonce |
+| `tests/phrase.test.js` | écoute de phrase : résultats du micro rejoués tels que Chrome les envoie |
+| `tests/echo.test.js` | anti-écho (horloge passée en paramètre, aucune attente) |
+| `tests/session.test.js` | match en cours : commandes, journal, archives, sauvegarde et reprise |
+| `tests/journal.test.js` | export du journal (texte, nom de fichier) |
+| `tests/voice.test.js` | relance de l'écoute |
+| `tests/sw.test.js` | fichiers gardés hors ligne par le service worker |
+
+Les aides communes sont dans `tests/helpers.js` et `e2e/helpers.js`.
 
 Tests d'intégration (la vraie page dans Chromium, pilotée par Playwright) : dans `e2e/`.
 
