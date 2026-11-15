@@ -8,7 +8,9 @@
  * Annuler = dépiler le dernier point puis rejouer.
  * ===================================================================== */
 
+const LANG = 'fr-FR';   // langue de la reconnaissance, des annonces et des dates
 const OTHER = { blue: 'red', red: 'blue' };
+const DEFAULT_NAMES = { blue: 'Bleu', red: 'Rouge' };   // nom affiché quand l'équipe n'a pas de nom
 const COLOR_WORD = { blue: 'bleu', red: 'rouge' };
 const SETS_TO_WIN = 2;
 const GAMES_PER_SET = 6;
@@ -351,55 +353,68 @@ function formatSet(set, first = 'blue') {
   return txt;
 }
 
-/** @param {LogEntry[]} logs */
+/* ---------- Journal : export texte ---------- */
+
+/**
+ * Lignes du journal d'un match, colonnes séparées par des tabulations (se colle dans un tableur) :
+ * heure, écart avec la ligne précédente, source, résultat, texte entendu.
+ * @param {LogEntry[]} logs
+ * @returns {string}
+ */
 function formatLog(logs) {
   return logs
-      .map((log, i) => {
-        const date = new Date(log.t).toLocaleTimeString('fr-FR');
-        const gap = i === 0 ? '' : '+' + Math.round((log.t - logs[i - 1].t)/1000) + 's';
-        return [date, gap, log.src, log.result, log.text].join('\t');
-      })
-      .join('\n');
-}
-
-/** @param {State} state */
-function formatScore(state) {
-  const gameParts = state.completedSets.map(s => formatSet(s, 'blue'));
-  if (state.winner === null) {
-    gameParts.push(`${state.games.blue}-${state.games.red}`);
-  }
-  return gameParts.join(', ') + (state.winner !== null ? ' (terminé)' : ' (abandonné)');
+    .map((log, i) => {
+      const time = new Date(log.t).toLocaleTimeString(LANG);
+      const gap = i === 0 ? '' : '+' + Math.round((log.t - logs[i - 1].t) / 1000) + 's';
+      return [time, gap, log.src, log.result, log.text].join('\t');
+    })
+    .join('\n');
 }
 
 /**
- * Texte complet du journal à envoyer : un en-tête, puis un bloc par match archivé.
- * @param {Archive[]} archives
+ * Score d'un match pour le titre de son bloc : sets terminés, set en cours si le match a été
+ * abandonné, puis le statut. Bleu en premier : « 6-4, 3-1 (abandonné) ».
+ * @param {State} state
  * @returns {string}
  */
-function formatAllLogs(archives) {
+function formatScore(state) {
+  const parts = state.completedSets.map((set) => formatSet(set, 'blue'));
+  if (state.winner === null) parts.push(`${state.games.blue}-${state.games.red}`);
+  return parts.join(', ') + (state.winner !== null ? ' (terminé)' : ' (abandonné)');
+}
 
-  const logFile = [];
-
-  const header = [
-    'Journal App',
-    archives.length + ' match(s)',
-    'envoyé le ' + new Date().toLocaleString('fr-FR', { day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit' }),
-  ].join(' - ');
-  logFile.push(header);
-
+/**
+ * Texte complet du journal à envoyer : un en-tête, puis un bloc par match archivé
+ * (titre, puis ses lignes), avec une ligne vide entre chaque.
+ * @param {Archive[]} archives
+ * @param {Date} [now]  date d'envoi (en-tête)
+ * @returns {string}
+ */
+function formatAllLogs(archives, now = new Date()) {
+  const sentAt = now.toLocaleString(LANG, {
+    day: '2-digit', month: '2-digit', year: 'numeric', hour: '2-digit', minute: '2-digit',
+  });
+  const blocks = [`Journal App - ${archives.length} match(s) - envoyé le ${sentAt}`];
   for (const match of archives) {
-    const blueTeam = match.names.blue || 'Bleu';
-    const redTeam = match.names.red || 'Rouge';
-    const date = new Date(match.log[0].t).toLocaleDateString('fr-FR');
-    const score = formatScore(match.state);
-    const matchTitle = `### ${blueTeam} vs ${redTeam} - ${date} - ${score} - ${match.log.length} entrées ###`;
-    logFile.push(matchTitle + '\n' + formatLog(match.log));
+    const blue = match.names.blue || DEFAULT_NAMES.blue;
+    const red = match.names.red || DEFAULT_NAMES.red;
+    const date = new Date(match.log[0].t).toLocaleDateString(LANG);
+    const title = `### ${blue} vs ${red} - ${date} - ${formatScore(match.state)} - ${match.log.length} entrées ###`;
+    blocks.push(title + '\n' + formatLog(match.log));
   }
+  return blocks.join('\n\n');
+}
 
-  // ── 4. L'ASSEMBLAGE ──────────────────────────────────────────────────────
-  // On colle tous les morceaux de la liste, avec une ligne vide entre chaque
-  // (deux retours à la ligne), et on renvoie le texte obtenu.
-  return logFile.join('\n\n');
+/**
+ * Nom du fichier envoyé, daté sans caractère interdit dans un nom de fichier (ni « / » ni « : ») :
+ * journal-score_11-10-2026_18h42.txt
+ * @param {Date} now
+ * @returns {string}
+ */
+function exportFileName(now) {
+  const day = now.toLocaleDateString(LANG).replaceAll('/', '-');
+  const time = now.toLocaleTimeString(LANG, { hour: '2-digit', minute: '2-digit' }).replace(':', 'h');
+  return `journal-score_${day}_${time}.txt`;
 }
 
 /* ---------- Match en cours : état, journal, archives, sauvegarde ---------- */
@@ -747,7 +762,7 @@ if (typeof module !== 'undefined' && module.exports) {
     gamesPhrase, setsPhrase, announceEvent, undoPhrase, scorePhrase, displayPoints, formatSet,
     normalize, detectCommand, detectInNewWords, createPhraseListener, createEchoGuard,
     MAX_PHRASE_WORDS, PHRASE_CONTINUATION_MS, ECHO_GUARD_MS, SPEECH_MAX_MS,
-    formatLog, formatScore, formatAllLogs, createMatchSession, LOG_MAX, ARCHIVES_MAX,
+    formatLog, formatScore, formatAllLogs, exportFileName, createMatchSession, LOG_MAX, ARCHIVES_MAX,
   };
 }
 
@@ -760,7 +775,6 @@ if (typeof document !== 'undefined') {
     const STORAGE_KEY = 'padel-score-v1';
     const TAP_DEBOUNCE_MS = 350; // anti double-tap accidentel
     const ANNOUNCE_DELAY_MS = 180; // le bip passe avant l'annonce
-    const LANG = 'fr-FR';
     const SAVE_DELAY_MS = 1000;   // les lignes de journal sont sauvegardées par paquets
 
     const $ = (id) => document.getElementById(id);
@@ -817,7 +831,7 @@ if (typeof document !== 'undefined') {
         if (!this.supported) return;
         const pick = () => {
           const voices = window.speechSynthesis.getVoices();
-          this.voice = voices.find((v) => v.lang === 'fr-FR')
+          this.voice = voices.find((v) => v.lang === LANG)
             || voices.find((v) => v.lang && v.lang.toLowerCase().startsWith('fr'))
             || null;
         };
@@ -831,7 +845,7 @@ if (typeof document !== 'undefined') {
         const synth = window.speechSynthesis;
         synth.cancel();
         const u = new SpeechSynthesisUtterance(text);
-        u.lang = 'fr-FR';
+        u.lang = LANG;
         if (this.voice) u.voice = this.voice;
         u.rate = 1.05;
         u.onend = done;
@@ -1116,7 +1130,7 @@ if (typeof document !== 'undefined') {
     }
 
     function teamName(team) {
-      return session.names[team] || (team === 'blue' ? 'Bleu' : 'Rouge');
+      return session.names[team] || DEFAULT_NAMES[team];
     }
 
     function showScreen(name) {
@@ -1248,33 +1262,23 @@ if (typeof document !== 'undefined') {
       setTimeout(() => button.textContent = 'Envoyer les Logs', 1000);
     }
 
+    /** Envoie le journal de tous les matchs archivés : partage de fichier, ou copie en secours. */
     async function shareLogs() {
-
-      const allLogs = formatAllLogs(session.archives);
-
-      // 2. Le nom du fichier, avec la date et l'heure d'envoi : journal-padel_11-10-2026_18h42.txt
       const now = new Date();
-      const day = now.toLocaleDateString('fr-FR').replaceAll('/', '-');
-      const time = now.toLocaleTimeString('fr-FR', { hour: '2-digit', minute: '2-digit' }).replace(':', 'h');
-      const fileName = `journal-score_${day}_${time}.txt`;
-      const file = new File(
-          [allLogs],
-          fileName,
-          { type: "text/plain" }
-      );
-
+      const text = formatAllLogs(session.archives, now);
+      const file = new File([text], exportFileName(now), { type: 'text/plain' });
       const shareData = { files: [file], title: 'Journal Score' };
       const canShareFile = navigator.canShare && navigator.canShare(shareData);
 
       try {
-        if (canShareFile){
-          await navigator.share(shareData)
+        if (canShareFile) {
+          await navigator.share(shareData);
         } else {
-          await navigator.clipboard.writeText(allLogs)
+          await navigator.clipboard.writeText(text);
           flashButton('Copié ✓');
         }
       } catch (e) {
-        if (e.name === 'AbortError') return;
+        if (e.name === 'AbortError') return;   // menu de partage fermé : pas une erreur
         flashButton('Envoi impossible');
       }
     }

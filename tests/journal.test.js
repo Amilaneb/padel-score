@@ -4,7 +4,7 @@
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
-const { replay, formatScore, formatLog, formatAllLogs } = require('../app.js');
+const { replay, formatScore, formatLog, formatAllLogs, exportFileName } = require('../app.js');
 
 const games = (team, n) => Array(4 * n).fill(team);
 const T0 = new Date(2026, 9, 10, 14, 2, 11).getTime();   // 10/10/2026 14:02:11, heure locale
@@ -78,4 +78,13 @@ test('formatAllLogs : aucune cellule ne commence par "=" (pris pour une formule 
       assert.ok(!cell.startsWith('='), `cellule qui commence par "=" : ${cell}`);
     }
   }
+});
+
+test('formatAllLogs : en-tête exact avec la date d\'envoi', () => {
+  const sentAt = new Date(2026, 10, 15, 9, 5);   // 15/11/2026 09:05, heure locale
+  assert.equal(formatAllLogs([], sentAt), 'Journal App - 0 match(s) - envoyé le 15/11/2026 09:05');
+});
+
+test('exportFileName : daté, sans « / » ni « : »', () => {
+  assert.equal(exportFileName(new Date(2026, 9, 11, 18, 42)), 'journal-score_11-10-2026_18h42.txt');
 });
