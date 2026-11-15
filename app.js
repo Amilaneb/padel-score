@@ -758,12 +758,31 @@ function createPhraseListener() {
   };
 }
 
+/* ---------- Relance de l'écoute ---------- */
+
+const SHORT_SESSION_MS = 1500;   // session d'écoute plus courte que ça : compte comme un échec rapide
+const MAX_QUICK_FAILS = 3;       // au-delà d'autant d'échecs rapides de suite, on espace les relances
+const RESTART_DELAY_MS = 250;    // relance normale
+const BACKOFF_DELAY_MS = 3000;   // relance espacée (le micro échoue en boucle)
+
+/**
+ * Délai avant de relancer une écoute que le navigateur a coupée.
+ * @param {number} sessionMs     durée de la session qui vient de se terminer
+ * @param {number} quickFails    échecs rapides de suite jusqu'ici
+ * @returns {{delay: number, quickFails: number}}
+ */
+function restartPlan(sessionMs, quickFails) {
+  const fails = sessionMs < SHORT_SESSION_MS ? quickFails + 1 : 0;
+  return { delay: fails > MAX_QUICK_FAILS ? BACKOFF_DELAY_MS : RESTART_DELAY_MS, quickFails: fails };
+}
+
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     initialState, applyPoint, replay, numberFr, gamePointsPhrase, tiebreakPhrase,
     gamesPhrase, setsPhrase, announceEvent, undoPhrase, scorePhrase, displayPoints, formatSet,
     normalize, detectCommand, detectInNewWords, createPhraseListener, createEchoGuard,
     MAX_PHRASE_WORDS, PHRASE_CONTINUATION_MS, ECHO_GUARD_MS, SPEECH_MAX_MS, TAP_DEBOUNCE_MS, STORAGE_KEY,
+    restartPlan, RESTART_DELAY_MS, BACKOFF_DELAY_MS,
     formatLog, formatScore, formatAllLogs, exportFileName, createMatchSession, LOG_MAX, ARCHIVES_MAX,
   };
 }
@@ -857,16 +876,28 @@ if (typeof document !== 'undefined') {
 
     /* ---------- Reconnaissance vocale ---------- */
 
+    /**
+     * Événement envoyé par la reconnaissance vocale à l'appli (un seul écouteur, voir onVoiceEvent) :
+     *   { type: 'status', state, detail }   état du micro (listening, restarting, off, unavailable, denied)
+     *   { type: 'mode' }                     mode local / en ligne changé (lire Voice.mode / localStatus)
+     *   { type: 'log', src, text, result }   ligne de journal (src 'mic' par défaut, ou 'voice')
+     *   { type: 'heard', text, note }        texte entendu à montrer
+     *   { type: 'command', cmd, text }       commande à appliquer
+     * @typedef {Object} VoiceEvent
+     */
+
     const Voice = {
       SR: window.SpeechRecognition || window.webkitSpeechRecognition || null,
       rec: null,
+      /** @type {(event: VoiceEvent) => void} */
+      emit: () => {},
       wanted: false,
       blocked: false,   // permission refusée / pas de micro : on n'insiste plus
       startedAt: 0,
       quickFails: 0,
       restartTimer: null,
-      listener: createPhraseListener(),
       quickRestart: false,   // relance immédiate demandée (phrase trop longue)
+      listener: createPhraseListener(),
       // Reconnaissance sur l'appareil (Chrome récent) : 'local' si active, sinon 'cloud'.
       mode: 'cloud',
       // available | downloadable | downloading | unavailable | unsupported | unknown
@@ -884,7 +915,7 @@ if (typeof document !== 'undefined') {
       async checkLocal() {
         if (!this.localSupported) {
           this.localStatus = 'unsupported';
-          renderVoiceMode();
+          this.emit({ type: 'mode' });
           return;
         }
         try {
@@ -892,40 +923,51 @@ if (typeof document !== 'undefined') {
         } catch (e) {
           this.localStatus = 'unavailable';
         }
-        if (this.localStatus === 'available') this.setMode('local');
-        renderVoiceMode();
+        if (this.localStatus === 'available') this.useLocal();
+        this.emit({ type: 'mode' });
       },
 
       /** Télécharge le français pour l'appareil. Doit être appelé pendant un geste utilisateur. */
       installLocal() {
         if (!this.localSupported || this.localStatus !== 'downloadable') return;
         this.localStatus = 'downloading';
-        renderVoiceMode();
+        this.emit({ type: 'mode' });
         this.SR.install({ langs: [LANG], processLocally: true })
           .then((ok) => {
             this.localStatus = ok ? 'available' : 'unavailable';
-            if (ok) this.setMode('local');
+            if (ok) this.useLocal();
           })
           .catch(() => { this.localStatus = 'unavailable'; })
-          .then(() => renderVoiceMode());
+          .then(() => this.emit({ type: 'mode' }));
       },
 
-      setMode(mode) {
-        if (!this.rec || this.mode === mode) return;
-        // Une fois la reconnaissance sur le téléphone en place, on ne revient jamais au service en ligne.
-        if (mode === 'cloud' && this.localStatus === 'available') return;
-        this.mode = mode;
-        this.rec.processLocally = mode === 'local';
-        renderVoiceMode();
+      /**
+       * Passe à la reconnaissance sur le téléphone. Il n'y a pas de chemin inverse : une fois le
+       * mode local en place, l'appli ne repasse jamais par le service en ligne.
+       */
+      useLocal() {
+        if (!this.rec || this.mode === 'local') return;
+        this.mode = 'local';
+        this.rec.processLocally = true;
+        this.emit({ type: 'mode' });
         // Relance pour appliquer le nouveau mode tout de suite (onend redémarre l'écoute).
         if (this.wanted) {
           try { this.rec.abort(); } catch (e) { /* ignore */ }
         }
       },
 
-      init() {
+      /** Arrête le vocal pour de bon (micro refusé, absent, ou mode local en échec). */
+      block(detail) {
+        this.blocked = true;
+        this.wanted = false;
+        this.emit({ type: 'status', state: 'denied', detail });
+      },
+
+      /** @param {(event: VoiceEvent) => void} onEvent */
+      init(onEvent) {
+        this.emit = onEvent;
         if (!this.SR) {
-          setMicStatus('unavailable');
+          this.emit({ type: 'status', state: 'unavailable' });
           return;
         }
         const rec = new this.SR();
@@ -938,8 +980,8 @@ if (typeof document !== 'undefined') {
         rec.onstart = () => {
           this.startedAt = Date.now();
           this.listener.reset();   // nouvelle session d'écoute : nouvelle phrase
-          setMicStatus('listening');
-          addLog('mic', this.mode, 'start');
+          this.emit({ type: 'status', state: 'listening' });
+          this.emit({ type: 'log', text: this.mode, result: 'start' });
         };
 
         rec.onresult = (e) => {
@@ -952,19 +994,19 @@ if (typeof document !== 'undefined') {
             });
             switch (decision.type) {
               case 'command':
-                showHeard(transcripts[0], null);
-                handleCommand(decision.cmd, 'voice', heard + (result.isFinal ? '' : ' [provisoire]'));
+                this.emit({ type: 'heard', text: transcripts[0], note: null });
+                this.emit({ type: 'command', cmd: decision.cmd, text: heard + (result.isFinal ? '' : ' [provisoire]') });
                 break;
               case 'ignored':
-                addLog('voice', heard, 'ignored');
-                showHeard(transcripts[0], 'ignoré pendant l\'annonce');
+                this.emit({ type: 'log', src: 'voice', text: heard, result: 'ignored' });
+                this.emit({ type: 'heard', text: transcripts[0], note: 'ignoré pendant l\'annonce' });
                 break;
               case 'unknown':
-                addLog('voice', heard, 'unknown');
-                showHeard(transcripts[0], 'non reconnu');
+                this.emit({ type: 'log', src: 'voice', text: heard, result: 'unknown' });
+                this.emit({ type: 'heard', text: transcripts[0], note: 'non reconnu' });
                 break;
               case 'interim':
-                showHeard(transcripts[0], '…');   // montre aux joueurs que l'appli les entend
+                this.emit({ type: 'heard', text: transcripts[0], note: '…' });   // l'appli montre qu'elle entend
                 break;
               default: break;
             }
@@ -977,45 +1019,40 @@ if (typeof document !== 'undefined') {
         };
 
         rec.onerror = (e) => {
-          if (this.wanted) addLog('mic', e.message || '', 'error:' + e.error);
+          if (this.wanted) this.emit({ type: 'log', text: e.message || '', result: 'error:' + e.error });
           // Échec du mode « sur l'appareil » : on ne repasse PAS par les serveurs de Google
           // (lent et dépendant du réseau) ; le vocal s'arrête et le match continue au toucher.
           if (this.mode === 'local'
             && (e.error === 'language-not-supported' || e.error === 'service-not-allowed')) {
             this.localStatus = 'unavailable';
-            this.blocked = true;
-            this.wanted = false;
-            setMicStatus('denied', 'local-failed');
+            this.block('local-failed');
             return;
           }
           if (e.error === 'not-allowed' || e.error === 'service-not-allowed' || e.error === 'audio-capture') {
-            this.blocked = true;
-            this.wanted = false;
-            setMicStatus('denied', e.error);
+            this.block(e.error);
           }
           // Autres erreurs (no-speech, network, aborted...) : onend relancera.
         };
 
         rec.onend = () => {
           if (!this.wanted || this.blocked) {
-            if (!this.blocked) setMicStatus('off');
+            if (!this.blocked) this.emit({ type: 'status', state: 'off' });
             return;
           }
           if (this.quickRestart) {
             // Relance demandée par l'appli (phrase trop longue) : immédiate, sans compter comme un échec.
             this.quickRestart = false;
-            addLog('mic', this.mode, 'reset');
+            this.emit({ type: 'log', text: this.mode, result: 'reset' });
             this.start();
             return;
           }
-          addLog('mic', this.mode, 'end');
+          this.emit({ type: 'log', text: this.mode, result: 'end' });
           // Session coupée par le navigateur : on relance automatiquement.
-          const shortLived = Date.now() - this.startedAt < 1500;
-          this.quickFails = shortLived ? this.quickFails + 1 : 0;
-          const delay = this.quickFails > 3 ? 3000 : 250;
-          setMicStatus('restarting');
+          const plan = restartPlan(Date.now() - this.startedAt, this.quickFails);
+          this.quickFails = plan.quickFails;
+          this.emit({ type: 'status', state: 'restarting' });
           clearTimeout(this.restartTimer);
-          this.restartTimer = setTimeout(() => this.start(), delay);
+          this.restartTimer = setTimeout(() => this.start(), plan.delay);
         };
 
         this.rec = rec;
@@ -1045,7 +1082,7 @@ if (typeof document !== 'undefined') {
         if (this.rec) {
           try { this.rec.abort(); } catch (e) { /* ignore */ }
         }
-        if (!this.blocked && this.available) setMicStatus('off');
+        if (!this.blocked && this.available) this.emit({ type: 'status', state: 'off' });
       },
     };
 
@@ -1119,6 +1156,21 @@ if (typeof document !== 'undefined') {
       if (!known) return;
       el.textContent = texts[key];
       $('mic-mode').textContent = Voice.mode === 'local' ? 'sur le téléphone' : 'en ligne';
+    }
+
+    /**
+     * Seul point d'entrée des événements de la reconnaissance vocale dans l'appli.
+     * @param {VoiceEvent} event
+     */
+    function onVoiceEvent(event) {
+      switch (event.type) {
+        case 'status': setMicStatus(event.state, event.detail); break;
+        case 'mode': renderVoiceMode(); break;
+        case 'log': addLog(event.src || 'mic', event.text, event.result); break;
+        case 'heard': showHeard(event.text, event.note); break;
+        case 'command': handleCommand(event.cmd, 'voice', event.text); break;
+        default: break;
+      }
     }
 
     let heardTimer = null;
@@ -1343,7 +1395,7 @@ if (typeof document !== 'undefined') {
       if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 
       Speaker.init();
-      Voice.init();
+      Voice.init(onVoiceEvent);
 
       if (!Voice.available) {
         const w = $('setup-warning');
