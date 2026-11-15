@@ -58,8 +58,9 @@ const TIEBREAK_POINTS = 7;
  * @property {number} t          heure, en millisecondes (Date.now())
  * @property {'voice'|'touch'|'mic'|'app'} src
  * @property {string} text       ce qui a été entendu ('' pour un toucher ; mode du micro pour 'mic')
- * @property {string} result     voice/touch : 'blue' | 'red' | 'undo' | 'unknown' | 'ignored'
- *                               mic : 'start' | 'end' | 'error:<code>'   app : 'hidden' | 'visible'
+ * @property {string} result     voice/touch : 'blue' | 'red' | 'undo' | 'refused' (match terminé) |
+ *                                 'unknown' | 'ignored' (pendant une annonce)
+ *                               mic : 'start' | 'end' | 'reset' | 'error:<code>'   app : 'hidden' | 'visible'
  */
 
 /**
@@ -298,15 +299,21 @@ function announceEvent(event, state) {
  */
 function undoPhrase(undoneType, state, remaining) {
   if (remaining === 0) return 'point annulé, retour au début du match';
-  let text;
-  if (state.tiebreak) {
-    text = 'jeu décisif, ' + tiebreakPhrase(state.points);
-  } else {
-    text = gamePointsPhrase(state.points);
-    const startOfGame = state.points.blue === 0 && state.points.red === 0;
-    if (GAME_ENDING.has(undoneType) || startOfGame) text += ', ' + gamesPhrase(state.games);
-  }
-  return 'point annulé, retour à ' + text;
+  const startOfGame = state.points.blue === 0 && state.points.red === 0;
+  return 'point annulé, retour à ' + scorePhrase(state, GAME_ENDING.has(undoneType) || startOfGame);
+}
+
+/**
+ * Score actuel en toutes lettres : « trente quinze », « jeu décisif, trois à deux »,
+ * suivi des jeux si `withGames` (« quinze zéro, deux jeux à un »).
+ * @param {State} state
+ * @param {boolean} withGames
+ * @returns {string}
+ */
+function scorePhrase(state, withGames) {
+  if (state.tiebreak) return 'jeu décisif, ' + tiebreakPhrase(state.points);
+  const points = gamePointsPhrase(state.points);
+  return withGames ? points + ', ' + gamesPhrase(state.games) : points;
 }
 
 /**
@@ -410,6 +417,15 @@ const newCounters = () => ({ voice: 0, touch: 0, voiceUndo: 0, touchUndo: 0 });
 const isValidArchive = (a) => !!(a && a.names && a.state && Array.isArray(a.log) && a.log.length > 0);
 
 /**
+ * Ce que l'écran doit faire après une commande.
+ * @typedef {Object} CommandEffect
+ * @property {'point'|'undo'|'nothing-to-undo'|'refused'} kind
+ * @property {Team} [team]               équipe qui a marqué (kind 'point')
+ * @property {string} [say]              annonce à faire
+ * @property {'point'|'undo'} [beep]     bip à jouer avant l'annonce
+ */
+
+/**
  * Match en cours : possède les noms, l'historique des points (d'où le score est recalculé),
  * les compteurs de saisie, le journal et les archives. Il produit et relit aussi la sauvegarde :
  * le format sauvegardé n'existe qu'ici.
@@ -468,6 +484,28 @@ function createMatchSession() {
       const undone = history.pop();
       state = replay(history).state;
       return undone;
+    },
+
+    /**
+     * Applique une commande (voix ou toucher) : note la ligne de journal, met le score à jour
+     * et dit ce que l'écran doit faire.
+     * @param {Command} cmd
+     * @param {'voice'|'touch'} source
+     * @param {string} text   ce qui a été entendu ('' pour un toucher)
+     * @param {number} now
+     * @returns {CommandEffect}
+     */
+    command(cmd, source, text, now) {
+      const refused = cmd !== 'undo' && !!state.winner;
+      this.addLog({ t: now, src: source, text, result: refused ? 'refused' : cmd });
+      if (refused) return { kind: 'refused' };   // match terminé : seul « annule » reste actif
+      if (cmd === 'undo') {
+        const undone = this.undo(source);
+        if (!undone) return { kind: 'nothing-to-undo', say: 'rien à annuler', beep: 'undo' };
+        return { kind: 'undo', say: undoPhrase(undone.type, state, history.length), beep: 'undo' };
+      }
+      const event = this.point(cmd, source);
+      return { kind: 'point', team: cmd, say: announceEvent(event, state), beep: 'point' };
     },
 
     /** @param {LogEntry} entry */
@@ -706,7 +744,7 @@ function createPhraseListener() {
 if (typeof module !== 'undefined' && module.exports) {
   module.exports = {
     initialState, applyPoint, replay, numberFr, gamePointsPhrase, tiebreakPhrase,
-    gamesPhrase, setsPhrase, announceEvent, undoPhrase, displayPoints, formatSet,
+    gamesPhrase, setsPhrase, announceEvent, undoPhrase, scorePhrase, displayPoints, formatSet,
     normalize, detectCommand, detectInNewWords, createPhraseListener, createEchoGuard,
     MAX_PHRASE_WORDS, PHRASE_CONTINUATION_MS, ECHO_GUARD_MS, SPEECH_MAX_MS,
     formatLog, formatScore, formatAllLogs, createMatchSession, LOG_MAX, ARCHIVES_MAX,
@@ -900,9 +938,8 @@ if (typeof document !== 'undefined') {
             });
             switch (decision.type) {
               case 'command':
-                addLog('voice', heard + (result.isFinal ? '' : ' [provisoire]'), decision.cmd);
                 showHeard(transcripts[0], null);
-                handleCommand(decision.cmd, 'voice');
+                handleCommand(decision.cmd, 'voice', heard + (result.isFinal ? '' : ' [provisoire]'));
                 break;
               case 'ignored':
                 addLog('voice', heard, 'ignored');
@@ -1160,34 +1197,21 @@ if (typeof document !== 'undefined') {
 
     /* ---------- Actions ---------- */
 
-    function handleCommand(cmd, source) {
+    /**
+     * Seule entrée pour une commande, à la voix comme au toucher.
+     * @param {Command} cmd
+     * @param {'voice'|'touch'} source
+     * @param {string} [text]  ce qui a été entendu (voix)
+     */
+    function handleCommand(cmd, source, text = '') {
       if (screen === 'setup') return;
-      if (source === 'touch') addLog('touch', '', cmd);
-      if (cmd === 'undo') undo(source);
-      else scorePoint(cmd, source);
-    }
-
-    function scorePoint(team, source) {
-      const event = session.point(team, source);
-      if (!event) return; // match terminé : seul "annule" reste actif
-      render();
-      flashZone(team);
-      announce(announceEvent(event, session.state), 'point');
+      const effect = session.command(cmd, source, text, Date.now());
+      if (effect.kind === 'point' || effect.kind === 'undo') render();
+      if (effect.kind === 'point') flashZone(effect.team);
+      if (effect.say) announce(effect.say, effect.beep);
       save();
-      if (session.state.winner) showScreen('end');
-    }
-
-    function undo(source) {
-      const undone = session.undo(source);
-      if (!undone) {
-        announce('rien à annuler', 'undo');
-        save();
-        return;
-      }
-      render();
-      if (screen === 'end') showScreen('game');
-      announce(undoPhrase(undone.type, session.state, session.history.length), 'undo');
-      save();
+      const next = session.state.winner ? 'end' : 'game';
+      if (next !== screen) showScreen(next);
     }
 
     function startMatch() {
@@ -1377,13 +1401,7 @@ if (typeof document !== 'undefined') {
           overlay.hidden = true;
           Beep.unlock();
           Voice.start();
-          const s = session.state;
-          if (!s.winner) {
-            const text = s.tiebreak
-              ? 'jeu décisif, ' + tiebreakPhrase(s.points)
-              : gamePointsPhrase(s.points) + ', ' + gamesPhrase(s.games);
-            announce('reprise, ' + text, 'point');
-          }
+          if (!session.state.winner) announce('reprise, ' + scorePhrase(session.state, true), 'point');
         }, { once: true });
       }
     }

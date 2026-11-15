@@ -115,3 +115,30 @@ test('sauvegarde abîmée ou absente : rien ne casse', () => {
   assert.equal(session.load({ screen: 'game', history: [{ team: 'vert' }, { team: 'blue' }] }), true);
   assert.equal(session.history.length, 1);
 });
+
+test('command : point → effet avec annonce et bip, ligne de journal notée', () => {
+  const session = createMatchSession();
+  session.start({ blue: '', red: '' });
+  const effect = session.command('blue', 'voice', 'allez bleu', 1000);
+  assert.deepEqual(effect, { kind: 'point', team: 'blue', say: 'quinze zéro', beep: 'point' });
+  assert.deepEqual(session.log, [{ t: 1000, src: 'voice', text: 'allez bleu', result: 'blue' }]);
+  assert.equal(session.counters.voice, 1);
+});
+
+test('command : annuler, puis rien à annuler', () => {
+  const session = createMatchSession();
+  session.start({ blue: '', red: '' });
+  session.command('red', 'touch', '', 0);
+  assert.deepEqual(session.command('undo', 'touch', '', 1),
+    { kind: 'undo', say: 'point annulé, retour au début du match', beep: 'undo' });
+  assert.deepEqual(session.command('undo', 'voice', 'annule', 2),
+    { kind: 'nothing-to-undo', say: 'rien à annuler', beep: 'undo' });
+  assert.deepEqual(session.counters, { voice: 0, touch: 1, voiceUndo: 1, touchUndo: 1 });
+});
+
+test('command : point après la fin du match → refusé, et noté comme tel au journal', () => {
+  const session = playedSession(Array(48).fill('blue'));
+  assert.deepEqual(session.command('red', 'voice', 'rouge', 99), { kind: 'refused' });
+  assert.equal(session.log.at(-1).result, 'refused');
+  assert.equal(session.command('undo', 'touch', '', 100).kind, 'undo');   // « annule » reste possible
+});

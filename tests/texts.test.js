@@ -6,7 +6,7 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const {
   replay, numberFr, gamePointsPhrase, tiebreakPhrase, gamesPhrase, setsPhrase,
-  announceEvent, undoPhrase, displayPoints, formatSet,
+  announceEvent, undoPhrase, scorePhrase, displayPoints, formatSet,
 } = require('../app.js');
 
 const pair = (blue, red) => ({ blue, red });
@@ -88,4 +88,12 @@ test('formatSet : du point de vue de l\'équipe demandée, avec le tie-break', (
   assert.equal(formatSet({ blue: 6, red: 4, tiebreak: null }, 'blue'), '6-4');
   assert.equal(formatSet({ blue: 6, red: 4, tiebreak: null }, 'red'), '4-6');
   assert.equal(formatSet({ blue: 7, red: 6, tiebreak: { blue: 7, red: 5 } }, 'blue'), '7-6 (7-5)');
+});
+
+test('scorePhrase : score actuel, avec ou sans les jeux, et au tie-break', () => {
+  const state = replay(['blue', ...points('red', 4), 'blue']).state;   // 0-1 en jeux, 15-0
+  assert.equal(scorePhrase(state, false), 'quinze zéro');
+  assert.equal(scorePhrase(state, true), 'quinze zéro, zéro jeu à un');
+  const tiebreak = replay([...points('blue', 20), ...points('red', 24), ...points('blue', 4), 'red']).state;
+  assert.equal(scorePhrase(tiebreak, true), 'jeu décisif, zéro à un');
 });
