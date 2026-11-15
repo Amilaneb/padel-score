@@ -6,7 +6,8 @@ const test = require('node:test');
 const assert = require('node:assert/strict');
 const { replay, formatScore, formatLog, formatAllLogs, exportFileName } = require('../app.js');
 
-const games = (team, n) => Array(4 * n).fill(team);
+const { games } = require('./helpers');
+
 const T0 = new Date(2026, 9, 10, 14, 2, 11).getTime();   // 10/10/2026 14:02:11, heure locale
 
 const entry = (secondsAfterStart, src, result, text = '') =>

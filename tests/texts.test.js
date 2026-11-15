@@ -9,8 +9,9 @@ const {
   announceEvent, undoPhrase, scorePhrase, displayPoints, formatSet,
 } = require('../app.js');
 
+const { points } = require('./helpers');
+
 const pair = (blue, red) => ({ blue, red });
-const points = (team, n) => Array(n).fill(team);
 
 test('numberFr : nombres en toutes lettres', () => {
   const cases = {

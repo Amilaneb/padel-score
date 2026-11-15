@@ -5,44 +5,23 @@
 
 const { test, expect } = require('@playwright/test');
 
-const GUARD_MS = 1000;   // > ECHO_GUARD_MS (800) : fin de la protection anti-écho après une annonce
+const {
+  GUARD_MS, NEW_PHRASE_MS, failOnPageErrors, installFakeSpeech, startMatch, hear, readSave,
+} = require('./helpers');
 
-test.beforeEach(async ({ page }) => {
-  await page.addInitScript(() => {
-    class FakeRecognition {
-      constructor() { window.fakeRec = this; window.recStarts = 0; }
-      start() { window.recStarts += 1; setTimeout(() => this.onstart && this.onstart(), 0); }
-      stop() { setTimeout(() => this.onend && this.onend(), 0); }
-      abort() { setTimeout(() => this.onend && this.onend(), 0); }
-    }
-    window.SpeechRecognition = FakeRecognition;
-    window.webkitSpeechRecognition = FakeRecognition;
-    // Annonces instantanées : la fin d'annonce arrive tout de suite
-    speechSynthesis.speak = (u) => setTimeout(() => u.onend && u.onend(), 0);
-    speechSynthesis.cancel = () => {};
+failOnPageErrors();
 
-    /** Envoie un résultat comme Chrome : numéro de phrase, interprétations, provisoire ou définitif. */
-    window.hear = (index, texts, isFinal) => {
-      const results = [];
-      results[index] = Object.assign(texts.map((t) => ({ transcript: t })), { isFinal });
-      window.fakeRec.onresult({ resultIndex: index, results });
-    };
-  });
-});
-
-async function startMatch(page) {
-  await page.goto('/');
-  await page.click('#setup-form button[type=submit]');
-  await page.waitForTimeout(GUARD_MS);   // fin de l'annonce « début du match »
+/** Démarre un match avec la fausse reconnaissance, puis attend la fin de l'annonce « début du match ». */
+async function startVoiceMatch(page, options) {
+  await installFakeSpeech(page, options);
+  await startMatch(page);
+  await page.waitForTimeout(GUARD_MS);
 }
 
-const hear = (page, index, texts, isFinal) =>
-  page.evaluate(([i, t, f]) => window.hear(i, t, f), [index, texts, isFinal]);
-const voiceLog = (page) => page.evaluate(() =>
-  JSON.parse(localStorage.getItem('padel-score-v1')).log.filter((e) => e.src === 'voice'));
+const voiceLog = async (page) => (await readSave(page)).log.filter((e) => e.src === 'voice');
 
 test.describe('reconnaissance en ligne', () => {
-  test.beforeEach(async ({ page }) => startMatch(page));
+  test.beforeEach(async ({ page }) => startVoiceMatch(page));
 
   test('résultat provisoire : le point est marqué sans attendre la fin de la phrase', async ({ page }) => {
     await hear(page, 0, ['bleu'], false);
@@ -113,7 +92,7 @@ test.describe('reconnaissance en ligne', () => {
   test('la même équipe marque deux fois de suite à la voix : deux points', async ({ page }) => {
     await hear(page, 0, ['bleu'], true);
     await expect(page.locator('#points-blue')).toHaveText('15');
-    await page.waitForTimeout(1600);   // fin de l'annonce, et phrase précédente terminée
+    await page.waitForTimeout(NEW_PHRASE_MS);   // fin de l'annonce, et phrase précédente terminée
     await hear(page, 1, ['bleu'], true);
     await expect(page.locator('#points-blue')).toHaveText('30');
   });
@@ -134,8 +113,7 @@ test.describe('reconnaissance en ligne', () => {
     const startsBefore = await page.evaluate(() => window.recStarts);
     await hear(page, 0, ['on parle on parle on parle encore et encore toujours'], false);   // 10 mots
     await expect.poll(() => page.evaluate(() => window.recStarts)).toBe(startsBefore + 1);
-    const micLog = () => page.evaluate(() =>
-      JSON.parse(localStorage.getItem('padel-score-v1')).log.filter((e) => e.src === 'mic').map((e) => e.result));
+    const micLog = async () => (await readSave(page)).log.filter((e) => e.src === 'mic').map((e) => e.result);
     await expect.poll(micLog).toContain('reset');
     expect(await micLog()).not.toContain('end');   // relance volontaire, pas une coupure
 
@@ -146,20 +124,8 @@ test.describe('reconnaissance en ligne', () => {
 });
 
 test.describe('reconnaissance sur le téléphone', () => {
-  test.beforeEach(async ({ page }) => {
-    // La fausse reconnaissance sait aussi fonctionner « sur l'appareil », français installé
-    await page.addInitScript(() => {
-      const Base = window.SpeechRecognition;
-      class LocalRecognition extends Base {
-        constructor() { super(); this.processLocally = false; }
-      }
-      LocalRecognition.available = async () => 'available';
-      LocalRecognition.install = async () => true;
-      window.SpeechRecognition = LocalRecognition;
-      window.webkitSpeechRecognition = LocalRecognition;
-    });
-    await startMatch(page);
-  });
+  // La fausse reconnaissance sait aussi fonctionner « sur l'appareil », français installé
+  test.beforeEach(async ({ page }) => startVoiceMatch(page, { local: true }));
 
   test('le français installé : tout se fait sur le téléphone', async ({ page }) => {
     await expect(page.locator('#mic-mode')).toHaveText('sur le téléphone');

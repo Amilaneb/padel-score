@@ -419,6 +419,7 @@ function exportFileName(now) {
 
 /* ---------- Match en cours : état, journal, archives, sauvegarde ---------- */
 
+const STORAGE_KEY = 'padel-score-v1';   // clé de la sauvegarde dans le navigateur
 const LOG_MAX = 2000;      // entrées de journal gardées par match
 const ARCHIVES_MAX = 10;   // matchs gardés dans les archives
 
@@ -651,6 +652,7 @@ const PHRASE_CONTINUATION_MS = 1500;
 
 /* ---------- Anti-écho : quand le micro doit-il ignorer ce qu'il entend ? ---------- */
 
+const TAP_DEBOUNCE_MS = 350;   // anti double-tap accidentel sur les zones
 const ECHO_GUARD_MS = 800;     // marge après la fin d'une annonce (écho dans la pièce)
 const SPEECH_MAX_MS = 6000;    // durée max supposée d'une annonce (filet si la fin n'est jamais signalée)
 
@@ -761,7 +763,7 @@ if (typeof module !== 'undefined' && module.exports) {
     initialState, applyPoint, replay, numberFr, gamePointsPhrase, tiebreakPhrase,
     gamesPhrase, setsPhrase, announceEvent, undoPhrase, scorePhrase, displayPoints, formatSet,
     normalize, detectCommand, detectInNewWords, createPhraseListener, createEchoGuard,
-    MAX_PHRASE_WORDS, PHRASE_CONTINUATION_MS, ECHO_GUARD_MS, SPEECH_MAX_MS,
+    MAX_PHRASE_WORDS, PHRASE_CONTINUATION_MS, ECHO_GUARD_MS, SPEECH_MAX_MS, TAP_DEBOUNCE_MS, STORAGE_KEY,
     formatLog, formatScore, formatAllLogs, exportFileName, createMatchSession, LOG_MAX, ARCHIVES_MAX,
   };
 }
@@ -772,8 +774,6 @@ if (typeof module !== 'undefined' && module.exports) {
 
 if (typeof document !== 'undefined') {
   (function () {
-    const STORAGE_KEY = 'padel-score-v1';
-    const TAP_DEBOUNCE_MS = 350; // anti double-tap accidentel
     const ANNOUNCE_DELAY_MS = 180; // le bip passe avant l'annonce
     const SAVE_DELAY_MS = 1000;   // les lignes de journal sont sauvegardées par paquets
 

@@ -4,37 +4,13 @@
 
 const { test, expect } = require('@playwright/test');
 
-const STORAGE_KEY = 'padel-score-v1';
-const TAP_DELAY_MS = 400;   // > TAP_DEBOUNCE_MS (350) : sinon le 2e toucher est ignoré
+const {
+  failOnPageErrors, installFakeSpeech, startMatch, tap, quit, readSave, loadSave,
+} = require('./helpers');
 
-/** Toute erreur JavaScript dans la page fait échouer le test. */
-test.beforeEach(async ({ page }, testInfo) => {
-  testInfo.pageErrors = [];
-  page.on('pageerror', (err) => testInfo.pageErrors.push(err.message));
-});
-test.afterEach(async ({}, testInfo) => {
-  expect(testInfo.pageErrors, 'erreurs JavaScript dans la page').toEqual([]);
-});
-
-async function startMatch(page, blue = '', red = '') {
-  await page.goto('/');
-  await page.fill('#name-blue', blue);
-  await page.fill('#name-red', red);
-  await page.click('#setup-form button[type=submit]');
-  await expect(page.locator('#screen-game')).toBeVisible();
-}
-
-async function tap(page, team) {
-  await page.click('#zone-' + team);
-  await page.waitForTimeout(TAP_DELAY_MS);
-}
-
-/** Écrit une sauvegarde dans le localStorage puis recharge la page (comme après une fermeture). */
-async function loadSave(page, save) {
-  await page.goto('/');
-  await page.evaluate(([key, data]) => localStorage.setItem(key, JSON.stringify(data)), [STORAGE_KEY, save]);
-  await page.reload();
-}
+failOnPageErrors();
+// Micro et voix factices : la page ne dépend pas de la reconnaissance vocale de Chromium
+test.beforeEach(async ({ page }) => installFakeSpeech(page));
 
 test('écran d\'accueil : formulaire visible, bouton d\'envoi caché sans archive', async ({ page }) => {
   await page.goto('/');
@@ -113,9 +89,7 @@ test('Quitter archive le match ; le bouton d\'envoi copie le journal (sans parta
   await tap(page, 'blue');
   await tap(page, 'red');
 
-  page.once('dialog', (dialog) => dialog.accept());
-  await page.click('#btn-quit');
-  await expect(page.locator('#screen-setup')).toBeVisible();
+  await quit(page);
 
   const button = page.locator('#btn-share-logs');
   await expect(button).toBeVisible();
@@ -140,8 +114,7 @@ test('Quitter archive le match ; le bouton d\'envoi copie le journal (sans parta
 test('partage de fichier : nom daté et contenu du journal', async ({ page }) => {
   await startMatch(page);
   await tap(page, 'blue');
-  page.once('dialog', (dialog) => dialog.accept());
-  await page.click('#btn-quit');
+  await quit(page);
 
   // Simule un téléphone qui sait partager des fichiers
   await page.evaluate(() => {
@@ -165,8 +138,7 @@ test('partage de fichier : nom daté et contenu du journal', async ({ page }) =>
 test('partage annulé par l\'utilisateur : aucun message d\'erreur', async ({ page }) => {
   await startMatch(page);
   await tap(page, 'blue');
-  page.once('dialog', (dialog) => dialog.accept());
-  await page.click('#btn-quit');
+  await quit(page);
 
   await page.evaluate(() => {
     navigator.canShare = () => true;
@@ -182,8 +154,7 @@ test('partage annulé par l\'utilisateur : aucun message d\'erreur', async ({ pa
 test('échec du partage : message « Envoi impossible »', async ({ page }) => {
   await startMatch(page);
   await tap(page, 'blue');
-  page.once('dialog', (dialog) => dialog.accept());
-  await page.click('#btn-quit');
+  await quit(page);
 
   await page.evaluate(() => {
     navigator.canShare = () => true;
@@ -197,17 +168,15 @@ test('échec du partage : message « Envoi impossible »', async ({ page }) => {
 test('deux matchs de suite : chaque archive garde son propre journal', async ({ page }) => {
   await startMatch(page, 'Match1', 'A');
   await tap(page, 'blue');
-  page.once('dialog', (dialog) => dialog.accept());
-  await page.click('#btn-quit');
+  await quit(page);
 
   await page.click('#setup-form button[type=submit]');
   await tap(page, 'red');
   await tap(page, 'red');
   await tap(page, 'red');
-  page.once('dialog', (dialog) => dialog.accept());
-  await page.click('#btn-quit');
+  await quit(page);
 
-  const archives = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).archives, STORAGE_KEY);
+  const archives = (await readSave(page)).archives;
   expect(archives).toHaveLength(2);
   // Seules les actions de jeu nous intéressent ici (le journal contient aussi les événements du micro)
   const plays = (archive) => archive.log.filter((e) => e.src === 'touch').map((e) => e.result);
@@ -218,11 +187,10 @@ test('deux matchs de suite : chaque archive garde son propre journal', async ({ 
 test('faux départ : un match quitté sans aucun point n\'est pas archivé', async ({ page }) => {
   await startMatch(page);
   await page.click('#btn-undo');   // une action, mais aucun point
-  page.once('dialog', (dialog) => dialog.accept());
-  await page.click('#btn-quit');
+  await quit(page);
 
   await expect(page.locator('#screen-setup')).toBeVisible();
   await expect(page.locator('#btn-share-logs')).toBeHidden();
-  const archives = await page.evaluate((key) => JSON.parse(localStorage.getItem(key)).archives, STORAGE_KEY);
+  const archives = (await readSave(page)).archives;
   expect(archives).toEqual([]);
 });

@@ -3,6 +3,9 @@
 // Lancement sans réseau grâce au service worker (sw.js).
 
 const { test, expect } = require('@playwright/test');
+const { failOnPageErrors } = require('./helpers');
+
+failOnPageErrors();
 
 test('après une première ouverture, l\'appli se relance sans réseau', async ({ page, context }) => {
   await page.goto('/');

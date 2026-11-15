@@ -7,6 +7,7 @@ const assert = require('node:assert/strict');
 const {
   normalize, detectCommand, detectInNewWords, initialState, applyPoint, announceEvent,
 } = require('../app.js');
+const { games } = require('./helpers');
 
 test('normalize : minuscules, sans accents ni ponctuation, espaces simples', () => {
   assert.equal(normalize('  Point   BLEU ! '), 'point bleu');
@@ -63,7 +64,6 @@ test('detectCommand : "bleu" ou "rouge" seul suffit', () => {
 
 test('detectCommand : aucune annonce de l\'appli n\'est comprise comme une commande (écho)', () => {
   // Toutes les annonces d'un match complet : points, égalité, avantage, jeux, tie-break, sets, match
-  const games = (team, n) => Array(4 * n).fill(team);
   const deuce = ['blue', 'blue', 'blue', 'red', 'red', 'red', 'blue', 'red', 'red', 'red'];
   const history = [
     ...deuce, ...games('blue', 5), ...games('red', 5), ...games('blue', 1),   // jeu rouge après égalité, puis 6-6
